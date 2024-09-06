@@ -17,6 +17,7 @@
 package org.apache.rocketmq.client.impl;
 
 import com.alibaba.fastjson.JSON;
+
 import java.io.UnsupportedEncodingException;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
@@ -30,6 +31,7 @@ import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
+
 import org.apache.commons.lang3.ArrayUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.rocketmq.client.ClientConfig;
@@ -78,6 +80,7 @@ import org.apache.rocketmq.common.namesrv.NameServerUpdateCallback;
 import org.apache.rocketmq.common.namesrv.TopAddressing;
 import org.apache.rocketmq.common.sysflag.PullSysFlag;
 import org.apache.rocketmq.common.topic.TopicValidator;
+import org.apache.rocketmq.common.ObjectCreator;
 import org.apache.rocketmq.logging.org.slf4j.Logger;
 import org.apache.rocketmq.logging.org.slf4j.LoggerFactory;
 import org.apache.rocketmq.remoting.ChannelEventListener;
@@ -262,19 +265,48 @@ public class MQClientAPIImpl implements NameServerUpdateCallback {
     private String nameSrvAddr = null;
     private ClientConfig clientConfig;
 
-    public MQClientAPIImpl(final NettyClientConfig nettyClientConfig,
+    public MQClientAPIImpl(
+        final NettyClientConfig nettyClientConfig,
         final ClientRemotingProcessor clientRemotingProcessor,
-        RPCHook rpcHook, final ClientConfig clientConfig) {
+        final RPCHook rpcHook,
+        final ClientConfig clientConfig
+    ) {
         this(nettyClientConfig, clientRemotingProcessor, rpcHook, clientConfig, null);
     }
 
-    public MQClientAPIImpl(final NettyClientConfig nettyClientConfig,
+    public MQClientAPIImpl(
+        final NettyClientConfig nettyClientConfig,
         final ClientRemotingProcessor clientRemotingProcessor,
-        RPCHook rpcHook, final ClientConfig clientConfig, final ChannelEventListener channelEventListener) {
+        final RPCHook rpcHook,
+        final ClientConfig clientConfig,
+        final ChannelEventListener channelEventListener
+    ) {
+        this(
+            nettyClientConfig,
+            clientRemotingProcessor,
+            rpcHook,
+            clientConfig,
+            channelEventListener,
+            null
+        );
+    }
+
+    public MQClientAPIImpl(
+        final NettyClientConfig nettyClientConfig,
+        final ClientRemotingProcessor clientRemotingProcessor,
+        final RPCHook rpcHook,
+        final ClientConfig clientConfig,
+        final ChannelEventListener channelEventListener,
+        final ObjectCreator<RemotingClient> remotingClientCreator
+    ) {
         this.clientConfig = clientConfig;
         topAddressing = new DefaultTopAddressing(MixAll.getWSAddr(), clientConfig.getUnitName());
         topAddressing.registerChangeCallBack(this);
-        this.remotingClient = new NettyRemotingClient(nettyClientConfig, channelEventListener);
+
+        this.remotingClient = remotingClientCreator != null
+                ? remotingClientCreator.create(nettyClientConfig, channelEventListener)
+                : new NettyRemotingClient(nettyClientConfig, channelEventListener);
+
         this.clientRemotingProcessor = clientRemotingProcessor;
 
         this.remotingClient.registerRPCHook(new NamespaceRpcHook(clientConfig));

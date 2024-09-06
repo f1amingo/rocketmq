@@ -88,15 +88,14 @@ import org.apache.rocketmq.remoting.exception.RemotingTimeoutException;
 import org.apache.rocketmq.remoting.exception.RemotingTooMuchRequestException;
 import org.apache.rocketmq.remoting.protocol.RemotingCommand;
 
-@SuppressWarnings("NullableProblems")
 public class NettyRemotingServer extends NettyRemotingAbstract implements RemotingServer {
     private static final Logger log = LoggerFactory.getLogger(LoggerName.ROCKETMQ_REMOTING_NAME);
     private static final Logger TRAFFIC_LOGGER = LoggerFactory.getLogger(LoggerName.ROCKETMQ_TRAFFIC_NAME);
 
     private final ServerBootstrap serverBootstrap;
-    private final EventLoopGroup eventLoopGroupSelector;
-    private final EventLoopGroup eventLoopGroupBoss;
-    private final NettyServerConfig nettyServerConfig;
+    protected final EventLoopGroup eventLoopGroupSelector;
+    protected final EventLoopGroup eventLoopGroupBoss;
+    protected final NettyServerConfig nettyServerConfig;
 
     private final ExecutorService publicExecutor;
     private final ScheduledExecutorService scheduledExecutorService;
@@ -120,11 +119,11 @@ public class NettyRemotingServer extends NettyRemotingAbstract implements Remoti
     public static final String FILE_REGION_ENCODER_NAME = "fileRegionEncoder";
 
     // sharable handlers
-    private TlsModeHandler tlsModeHandler;
-    private NettyEncoder encoder;
-    private NettyConnectManageHandler connectionManageHandler;
-    private NettyServerHandler serverHandler;
-    private RemotingCodeDistributionHandler distributionHandler;
+    protected final TlsModeHandler tlsModeHandler = new TlsModeHandler(TlsSystemConfig.tlsMode);
+    protected final NettyEncoder encoder = new NettyEncoder();
+    protected final NettyConnectManageHandler connectionManageHandler = new NettyConnectManageHandler();
+    protected final NettyServerHandler serverHandler = new NettyServerHandler();
+    protected final RemotingCodeDistributionHandler distributionHandler = new RemotingCodeDistributionHandler();
 
     public NettyRemotingServer(final NettyServerConfig nettyServerConfig) {
         this(nettyServerConfig, null);
@@ -140,13 +139,13 @@ public class NettyRemotingServer extends NettyRemotingAbstract implements Remoti
         this.publicExecutor = buildPublicExecutor(nettyServerConfig);
         this.scheduledExecutorService = buildScheduleExecutor();
 
-        this.eventLoopGroupBoss = buildBossEventLoopGroup();
+        this.eventLoopGroupBoss = buildEventLoopGroupBoss();
         this.eventLoopGroupSelector = buildEventLoopGroupSelector();
 
         loadSslContext();
     }
 
-    private EventLoopGroup buildEventLoopGroupSelector() {
+    protected EventLoopGroup buildEventLoopGroupSelector() {
         if (useEpoll()) {
             return new EpollEventLoopGroup(nettyServerConfig.getServerSelectorThreads(), new ThreadFactoryImpl("NettyServerEPOLLSelector_"));
         } else {
@@ -154,7 +153,7 @@ public class NettyRemotingServer extends NettyRemotingAbstract implements Remoti
         }
     }
 
-    private EventLoopGroup buildBossEventLoopGroup() {
+    protected EventLoopGroup buildEventLoopGroupBoss() {
         if (useEpoll()) {
             return new EpollEventLoopGroup(1, new ThreadFactoryImpl("NettyEPOLLBoss_"));
         } else {
@@ -197,13 +196,7 @@ public class NettyRemotingServer extends NettyRemotingAbstract implements Remoti
             && Epoll.isAvailable();
     }
 
-    @Override
-    public void start() {
-        this.defaultEventExecutorGroup = new DefaultEventExecutorGroup(nettyServerConfig.getServerWorkerThreads(),
-            new ThreadFactoryImpl("NettyServerCodecThread_"));
-
-        prepareSharableHandlers();
-
+    protected void initServerBootstrap(ServerBootstrap serverBootstrap) {
         serverBootstrap.group(this.eventLoopGroupBoss, this.eventLoopGroupSelector)
             .channel(useEpoll() ? EpollServerSocketChannel.class : NioServerSocketChannel.class)
             .option(ChannelOption.SO_BACKLOG, 1024)
@@ -211,7 +204,7 @@ public class NettyRemotingServer extends NettyRemotingAbstract implements Remoti
             .childOption(ChannelOption.SO_KEEPALIVE, false)
             .childOption(ChannelOption.TCP_NODELAY, true)
             .localAddress(new InetSocketAddress(this.nettyServerConfig.getBindAddress(),
-                this.nettyServerConfig.getListenPort()))
+                    this.nettyServerConfig.getListenPort()))
             .childHandler(new ChannelInitializer<SocketChannel>() {
                 @Override
                 public void initChannel(SocketChannel ch) {
@@ -220,6 +213,14 @@ public class NettyRemotingServer extends NettyRemotingAbstract implements Remoti
             });
 
         addCustomConfig(serverBootstrap);
+    }
+
+    @Override
+    public void start() {
+        this.defaultEventExecutorGroup = new DefaultEventExecutorGroup(nettyServerConfig.getServerWorkerThreads(),
+            new ThreadFactoryImpl("NettyServerCodecThread_"));
+
+        initServerBootstrap(serverBootstrap);
 
         try {
             ChannelFuture sync = serverBootstrap.bind().sync();
@@ -408,14 +409,6 @@ public class NettyRemotingServer extends NettyRemotingAbstract implements Remoti
     @Override
     public ExecutorService getCallbackExecutor() {
         return this.publicExecutor;
-    }
-
-    private void prepareSharableHandlers() {
-        tlsModeHandler = new TlsModeHandler(TlsSystemConfig.tlsMode);
-        encoder = new NettyEncoder();
-        connectionManageHandler = new NettyConnectManageHandler();
-        serverHandler = new NettyServerHandler();
-        distributionHandler = new RemotingCodeDistributionHandler();
     }
 
     private void printRemotingCodeDistribution() {

@@ -26,29 +26,50 @@ import org.apache.rocketmq.client.ClientConfig;
 import org.apache.rocketmq.client.common.NameserverAccessConfig;
 import org.apache.rocketmq.client.impl.ClientRemotingProcessor;
 import org.apache.rocketmq.common.MixAll;
+import org.apache.rocketmq.common.ObjectCreator;
 import org.apache.rocketmq.common.utils.StartAndShutdown;
 import org.apache.rocketmq.remoting.RPCHook;
+import org.apache.rocketmq.remoting.RemotingClient;
 import org.apache.rocketmq.remoting.netty.NettyClientConfig;
 
 public class MQClientAPIFactory implements StartAndShutdown {
 
     private MQClientAPIExt[] clients;
+    private final NameserverAccessConfig nameserverAccessConfig;
     private final String namePrefix;
     private final int clientNum;
     private final ClientRemotingProcessor clientRemotingProcessor;
     private final RPCHook rpcHook;
     private final ScheduledExecutorService scheduledExecutorService;
-    private final NameserverAccessConfig nameserverAccessConfig;
+    private final ObjectCreator<RemotingClient> remotingClientCreator;
 
-    public MQClientAPIFactory(NameserverAccessConfig nameserverAccessConfig, String namePrefix, int clientNum,
+    public MQClientAPIFactory(
+        NameserverAccessConfig nameserverAccessConfig,
+        String namePrefix,
+        int clientNum,
         ClientRemotingProcessor clientRemotingProcessor,
-        RPCHook rpcHook, ScheduledExecutorService scheduledExecutorService) {
+        RPCHook rpcHook,
+        ScheduledExecutorService scheduledExecutorService
+    ) {
+        this(nameserverAccessConfig, namePrefix, clientNum, clientRemotingProcessor, rpcHook, scheduledExecutorService, null);
+    }
+
+    public MQClientAPIFactory(
+        NameserverAccessConfig nameserverAccessConfig,
+        String namePrefix,
+        int clientNum,
+        ClientRemotingProcessor clientRemotingProcessor,
+        RPCHook rpcHook,
+        ScheduledExecutorService scheduledExecutorService,
+        ObjectCreator<RemotingClient> remotingClientCreator
+    ) {
         this.nameserverAccessConfig = nameserverAccessConfig;
         this.namePrefix = namePrefix;
         this.clientNum = clientNum;
         this.clientRemotingProcessor = clientRemotingProcessor;
         this.rpcHook = rpcHook;
         this.scheduledExecutorService = scheduledExecutorService;
+        this.remotingClientCreator = remotingClientCreator;
 
         this.init();
     }
@@ -99,9 +120,13 @@ public class MQClientAPIFactory implements StartAndShutdown {
         NettyClientConfig nettyClientConfig = new NettyClientConfig();
         nettyClientConfig.setDisableCallbackExecutor(true);
 
-        MQClientAPIExt mqClientAPIExt = new MQClientAPIExt(clientConfig, nettyClientConfig,
+        MQClientAPIExt mqClientAPIExt = new MQClientAPIExt(
+            clientConfig,
+            nettyClientConfig,
             clientRemotingProcessor,
-            rpcHook);
+            rpcHook,
+            remotingClientCreator
+        );
 
         if (!mqClientAPIExt.updateNameServerAddressList()) {
             mqClientAPIExt.fetchNameServerAddr();
