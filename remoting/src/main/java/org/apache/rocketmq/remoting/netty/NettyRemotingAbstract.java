@@ -672,6 +672,10 @@ public abstract class NettyRemotingAbstract {
         }
     }
 
+    public HashMap<Integer, Pair<NettyRequestProcessor, ExecutorService>> getProcessorTable() {
+        return processorTable;
+    }
+
     class NettyEventExecutor extends ServiceThread {
         private final LinkedBlockingQueue<NettyEvent> eventQueue = new LinkedBlockingQueue<>();
 
