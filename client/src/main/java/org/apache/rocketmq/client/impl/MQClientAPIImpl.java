@@ -302,7 +302,9 @@ public class MQClientAPIImpl implements NameServerUpdateCallback, StartAndShutdo
         this.clientConfig = clientConfig;
         topAddressing = new DefaultTopAddressing(MixAll.getWSAddr(), clientConfig.getUnitName());
         topAddressing.registerChangeCallBack(this);
-        this.remotingClient = new NettyRemotingClient(nettyClientConfig, channelEventListener);
+        this.remotingClient = remotingClientCreator != null
+            ? remotingClientCreator.create(nettyClientConfig, channelEventListener)
+            : new NettyRemotingClient(nettyClientConfig, channelEventListener);
         this.clientRemotingProcessor = clientRemotingProcessor;
 
         this.remotingClient.registerRPCHook(new NamespaceRpcHook(clientConfig));
