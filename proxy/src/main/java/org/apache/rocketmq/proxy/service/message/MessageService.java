@@ -38,6 +38,7 @@ import org.apache.rocketmq.remoting.protocol.header.EndTransactionRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.GetMaxOffsetRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.GetMinOffsetRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.PopLiteMessageRequestHeader;
+import org.apache.rocketmq.remoting.protocol.header.PeekLiteMessageRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.PopMessageRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.PullMessageRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.QueryConsumerOffsetRequestHeader;
@@ -81,6 +82,13 @@ public interface MessageService {
         ProxyContext ctx,
         AddressableMessageQueue messageQueue,
         PopLiteMessageRequestHeader requestHeader,
+        long timeoutMillis
+    );
+
+    CompletableFuture<PopResult> peekLiteMessage(
+        ProxyContext ctx,
+        AddressableMessageQueue messageQueue,
+        PeekLiteMessageRequestHeader requestHeader,
         long timeoutMillis
     );
 

@@ -68,6 +68,7 @@ import org.apache.rocketmq.remoting.protocol.header.ExtraInfoUtil;
 import org.apache.rocketmq.remoting.protocol.header.GetMaxOffsetRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.GetMinOffsetRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.PopLiteMessageRequestHeader;
+import org.apache.rocketmq.remoting.protocol.header.PeekLiteMessageRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.PopMessageRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.PopMessageResponseHeader;
 import org.apache.rocketmq.remoting.protocol.header.PullMessageRequestHeader;
@@ -200,6 +201,12 @@ public class LocalMessageService implements MessageService {
     @Override
     public CompletableFuture<PopResult> popLiteMessage(ProxyContext ctx, AddressableMessageQueue messageQueue,
         PopLiteMessageRequestHeader requestHeader, long timeoutMillis) {
+        throw new NotImplementedException();
+    }
+
+    @Override
+    public CompletableFuture<PopResult> peekLiteMessage(ProxyContext ctx, AddressableMessageQueue messageQueue,
+        PeekLiteMessageRequestHeader requestHeader, long timeoutMillis) {
         throw new NotImplementedException();
     }
 

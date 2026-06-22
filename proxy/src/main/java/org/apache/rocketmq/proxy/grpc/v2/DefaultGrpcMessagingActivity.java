@@ -28,6 +28,8 @@ import apache.rocketmq.v2.HeartbeatRequest;
 import apache.rocketmq.v2.HeartbeatResponse;
 import apache.rocketmq.v2.NotifyClientTerminationRequest;
 import apache.rocketmq.v2.NotifyClientTerminationResponse;
+import apache.rocketmq.v2.PeekMessageRequest;
+import apache.rocketmq.v2.PeekMessageResponse;
 import apache.rocketmq.v2.QueryAssignmentRequest;
 import apache.rocketmq.v2.QueryAssignmentResponse;
 import apache.rocketmq.v2.QueryRouteRequest;
@@ -53,6 +55,7 @@ import org.apache.rocketmq.proxy.grpc.v2.client.ClientActivity;
 import org.apache.rocketmq.proxy.grpc.v2.common.GrpcClientSettingsManager;
 import org.apache.rocketmq.proxy.grpc.v2.consumer.AckMessageActivity;
 import org.apache.rocketmq.proxy.grpc.v2.consumer.ChangeInvisibleDurationActivity;
+import org.apache.rocketmq.proxy.grpc.v2.consumer.PeekMessageActivity;
 import org.apache.rocketmq.proxy.grpc.v2.consumer.ReceiveMessageActivity;
 import org.apache.rocketmq.proxy.grpc.v2.producer.ForwardMessageToDLQActivity;
 import org.apache.rocketmq.proxy.grpc.v2.producer.RecallMessageActivity;
@@ -75,6 +78,7 @@ public class DefaultGrpcMessagingActivity extends AbstractStartAndShutdown imple
     protected EndTransactionActivity endTransactionActivity;
     protected RouteActivity routeActivity;
     protected ClientActivity clientActivity;
+    protected PeekMessageActivity peekMessageActivity;
 
     protected DefaultGrpcMessagingActivity(MessagingProcessor messagingProcessor) {
         this.init(messagingProcessor);
@@ -93,6 +97,7 @@ public class DefaultGrpcMessagingActivity extends AbstractStartAndShutdown imple
         this.endTransactionActivity = new EndTransactionActivity(messagingProcessor, grpcClientSettingsManager, grpcChannelManager);
         this.routeActivity = new RouteActivity(messagingProcessor, grpcClientSettingsManager, grpcChannelManager);
         this.clientActivity = new ClientActivity(messagingProcessor, grpcClientSettingsManager, grpcChannelManager);
+        this.peekMessageActivity = new PeekMessageActivity(messagingProcessor, grpcClientSettingsManager, grpcChannelManager);
 
         this.appendStartAndShutdown(this.grpcClientSettingsManager);
     }
@@ -156,6 +161,12 @@ public class DefaultGrpcMessagingActivity extends AbstractStartAndShutdown imple
     public CompletableFuture<RecallMessageResponse> recallMessage(ProxyContext ctx,
         RecallMessageRequest request) {
         return this.recallMessageActivity.recallMessage(ctx, request);
+    }
+
+    @Override
+    public CompletableFuture<PeekMessageResponse> peekMessage(ProxyContext ctx,
+        PeekMessageRequest request) {
+        return this.peekMessageActivity.peekMessage(ctx, request);
     }
 
     @Override

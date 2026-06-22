@@ -42,6 +42,8 @@ import org.apache.rocketmq.common.MixAll;
 import org.apache.rocketmq.common.consumer.ConsumeFromWhere;
 import org.apache.rocketmq.common.consumer.ReceiptHandle;
 import org.apache.rocketmq.common.lite.LiteSubscriptionDTO;
+import org.apache.rocketmq.common.lite.OffsetOption;
+import org.apache.rocketmq.common.lite.PeekDirection;
 import org.apache.rocketmq.common.message.Message;
 import org.apache.rocketmq.common.message.MessageQueue;
 import org.apache.rocketmq.common.thread.ThreadPoolMonitor;
@@ -212,6 +214,14 @@ public class DefaultMessagingProcessor extends AbstractStartAndShutdown implemen
         return this.consumerProcessor.popLiteMessage(ctx, queueSelector,
             consumerGroup, topic, maxMsgNums, invisibleTime, pollTime,
             subscriptionData, popMessageResultFilter, attemptId, timeoutMillis);
+    }
+
+    @Override
+    public CompletableFuture<PopResult> peekLiteMessage(ProxyContext ctx,
+        String consumerGroup, String parentTopic, String liteTopic, int maxMsgNums,
+        OffsetOption offsetOption, PeekDirection direction, long timeoutMillis) {
+        return this.consumerProcessor.peekLiteMessage(ctx,
+            consumerGroup, parentTopic, liteTopic, maxMsgNums, offsetOption, direction, timeoutMillis);
     }
 
     @Override

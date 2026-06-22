@@ -31,6 +31,8 @@ import apache.rocketmq.v2.HeartbeatResponse;
 import apache.rocketmq.v2.MessagingServiceGrpc;
 import apache.rocketmq.v2.NotifyClientTerminationRequest;
 import apache.rocketmq.v2.NotifyClientTerminationResponse;
+import apache.rocketmq.v2.PeekMessageRequest;
+import apache.rocketmq.v2.PeekMessageResponse;
 import apache.rocketmq.v2.QueryAssignmentRequest;
 import apache.rocketmq.v2.QueryAssignmentResponse;
 import apache.rocketmq.v2.QueryRouteRequest;
@@ -391,6 +393,25 @@ public class GrpcMessagingApplication extends MessagingServiceGrpc.MessagingServ
                 context,
                 request,
                 () -> grpcMessagingActivity.recallMessage(context, request)
+                    .whenComplete((response, throwable) ->
+                        writeResponse(context, request, response, responseObserver, throwable, statusResponseCreator)),
+                responseObserver,
+                statusResponseCreator);
+        } catch (Throwable t) {
+            writeResponse(context, request, null, responseObserver, t, statusResponseCreator);
+        }
+    }
+
+    @Override
+    public void peekMessage(PeekMessageRequest request, StreamObserver<PeekMessageResponse> responseObserver) {
+        Function<Status, PeekMessageResponse> statusResponseCreator =
+            status -> PeekMessageResponse.newBuilder().setStatus(status).build();
+        ProxyContext context = createContext();
+        try {
+            this.addExecutor(this.consumerThreadPoolExecutor,
+                context,
+                request,
+                () -> grpcMessagingActivity.peekMessage(context, request)
                     .whenComplete((response, throwable) ->
                         writeResponse(context, request, response, responseObserver, throwable, statusResponseCreator)),
                 responseObserver,

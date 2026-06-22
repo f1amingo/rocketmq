@@ -206,6 +206,7 @@ import org.apache.rocketmq.remoting.protocol.header.HeartbeatRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.ListAclsRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.ListUsersRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.LockBatchMqRequestHeader;
+import org.apache.rocketmq.remoting.protocol.header.PeekLiteMessageRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.PopLiteMessageRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.PopLiteMessageResponseHeader;
 import org.apache.rocketmq.remoting.protocol.header.PopMessageRequestHeader;
@@ -890,6 +891,33 @@ public class MQClientAPIImpl implements NameServerUpdateCallback, StartAndShutdo
         });
     }
 
+    public void peekLiteMessageAsync(
+        final String brokerName, final String addr, final PeekLiteMessageRequestHeader requestHeader,
+        final long timeoutMillis, final PopCallback popCallback
+    ) throws RemotingException, InterruptedException {
+        final RemotingCommand request = RemotingCommand.createRequestCommand(RequestCode.PEEK_LITE_MESSAGE, requestHeader);
+        this.remotingClient.invokeAsync(addr, request, timeoutMillis, new InvokeCallback() {
+            @Override
+            public void operationComplete(ResponseFuture responseFuture) {
+            }
+
+            @Override
+            public void operationSucceed(RemotingCommand response) {
+                try {
+                    PopResult popResult = MQClientAPIImpl.this.processPeekLiteResponse(brokerName, response);
+                    popCallback.onSuccess(popResult);
+                } catch (Exception e) {
+                    popCallback.onException(e);
+                }
+            }
+
+            @Override
+            public void operationFail(Throwable throwable) {
+                popCallback.onException(throwable);
+            }
+        });
+    }
+
     public void ackMessageAsync(
         final String addr,
         final long timeOut,
@@ -1279,6 +1307,38 @@ public class MQClientAPIImpl implements NameServerUpdateCallback, StartAndShutdo
             messageExt.setBrokerName(brokerName);
             messageExt.setReconsumeTimes(orderCountList != null ? orderCountList.get(i) : 0);
             messageExt.setQueueOffset(Long.parseLong(queueOffsets[0]));
+        }
+        return popResult;
+    }
+
+    private PopResult processPeekLiteResponse(final String brokerName, final RemotingCommand response)
+        throws MQBrokerException {
+        PopStatus popStatus;
+        List<MessageExt> msgFoundList = null;
+        switch (response.getCode()) {
+            case ResponseCode.SUCCESS:
+                popStatus = PopStatus.FOUND;
+                ByteBuffer byteBuffer = ByteBuffer.wrap(response.getBody());
+                msgFoundList = MessageDecoder.decodesBatch(
+                    byteBuffer,
+                    clientConfig.isDecodeReadBody(),
+                    clientConfig.isDecodeDecompressBody(),
+                    true);
+                break;
+            case ResponseCode.PULL_NOT_FOUND:
+                popStatus = PopStatus.POLLING_NOT_FOUND;
+                break;
+            default:
+                throw new MQBrokerException(response.getCode(), response.getRemark());
+        }
+
+        PopResult popResult = new PopResult(popStatus, msgFoundList);
+        if (popStatus != PopStatus.FOUND) {
+            return popResult;
+        }
+
+        for (MessageExt messageExt : msgFoundList) {
+            messageExt.setBrokerName(brokerName);
         }
         return popResult;
     }

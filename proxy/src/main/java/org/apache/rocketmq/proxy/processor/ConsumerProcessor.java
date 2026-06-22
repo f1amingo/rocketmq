@@ -41,6 +41,8 @@ import org.apache.rocketmq.common.message.MessageClientIDSetter;
 import org.apache.rocketmq.common.message.MessageConst;
 import org.apache.rocketmq.common.message.MessageExt;
 import org.apache.rocketmq.common.message.MessageQueue;
+import org.apache.rocketmq.common.lite.OffsetOption;
+import org.apache.rocketmq.common.lite.PeekDirection;
 import org.apache.rocketmq.common.utils.FutureUtils;
 import org.apache.rocketmq.logging.org.slf4j.Logger;
 import org.apache.rocketmq.logging.org.slf4j.LoggerFactory;
@@ -51,6 +53,7 @@ import org.apache.rocketmq.proxy.common.utils.ProxyUtils;
 import org.apache.rocketmq.proxy.service.ServiceManager;
 import org.apache.rocketmq.proxy.service.message.ReceiptHandleMessage;
 import org.apache.rocketmq.proxy.service.route.AddressableMessageQueue;
+import org.apache.rocketmq.proxy.service.route.MessageQueueView;
 import org.apache.rocketmq.remoting.CommandCustomHeader;
 import org.apache.rocketmq.remoting.protocol.body.LockBatchRequestBody;
 import org.apache.rocketmq.remoting.protocol.body.UnlockBatchRequestBody;
@@ -59,6 +62,7 @@ import org.apache.rocketmq.remoting.protocol.header.ChangeInvisibleTimeRequestHe
 import org.apache.rocketmq.remoting.protocol.header.GetMaxOffsetRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.GetMinOffsetRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.PopLiteMessageRequestHeader;
+import org.apache.rocketmq.remoting.protocol.header.PeekLiteMessageRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.PopMessageRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.PullMessageRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.QueryConsumerOffsetRequestHeader;
@@ -291,6 +295,76 @@ public class ConsumerProcessor extends AbstractProcessor {
                     timeoutMillis)
                 .thenApplyAsync(popResult -> filterPopResult(ctx, popResult,
                     requestHeader, consumerGroup, topic, subscriptionData, popMessageResultFilter), this.executor);
+        } catch (Throwable t) {
+            future.completeExceptionally(t);
+            FutureUtils.addExecutor(future, this.executor);
+        }
+        return future;
+    }
+
+    public CompletableFuture<PopResult> peekLiteMessage(
+        ProxyContext ctx,
+        String consumerGroup,
+        String parentTopic,
+        String liteTopic,
+        int maxMsgNums,
+        OffsetOption offsetOption,
+        PeekDirection direction,
+        long timeoutMillis
+    ) {
+        CompletableFuture<PopResult> future = new CompletableFuture<>();
+        try {
+            MessageQueueView messageQueueView =
+                this.serviceManager.getTopicRouteService().getAllMessageQueueView(ctx, parentTopic);
+            List<AddressableMessageQueue> readQueues = messageQueueView.getReadSelector().getBrokerActingQueues();
+            if (readQueues == null || readQueues.isEmpty()) {
+                throw new ProxyException(ProxyExceptionCode.FORBIDDEN, "no readable queue");
+            }
+
+            if (maxMsgNums > ProxyUtils.MAX_MSG_NUMS_FOR_POP_REQUEST) {
+                log.warn("change maxNums from {} to {} for peek lite request, topic:{}, group:{}",
+                    maxMsgNums, ProxyUtils.MAX_MSG_NUMS_FOR_POP_REQUEST, parentTopic, consumerGroup);
+                maxMsgNums = ProxyUtils.MAX_MSG_NUMS_FOR_POP_REQUEST;
+            }
+
+            PeekLiteMessageRequestHeader requestHeader = new PeekLiteMessageRequestHeader();
+            requestHeader.setParentTopic(parentTopic);
+            requestHeader.setLiteTopic(liteTopic);
+            requestHeader.setConsumerGroup(consumerGroup);
+            requestHeader.setMaxMsgNum(maxMsgNums);
+            if (offsetOption != null) {
+                requestHeader.setOffsetOptionType(offsetOption.getType().name());
+                requestHeader.setOffsetOptionValue(offsetOption.getValue());
+            }
+            requestHeader.setPeekDirection(direction.name());
+
+            final int finalMaxMsgNums = maxMsgNums;
+
+            // Fan out peek to all readable brokers
+            List<CompletableFuture<PopResult>> brokerFutures = readQueues.stream()
+                .map(queue -> this.serviceManager.getMessageService()
+                    .peekLiteMessage(ctx, queue, requestHeader, timeoutMillis)
+                    .exceptionally(ex -> null))
+                .collect(Collectors.toList());
+
+            future = CompletableFuture.allOf(brokerFutures.toArray(new CompletableFuture[0]))
+                .thenApplyAsync(v -> {
+                    List<MessageExt> allMessages = new ArrayList<>();
+                    for (CompletableFuture<PopResult> bf : brokerFutures) {
+                        PopResult result = bf.getNow(null);
+                        if (result != null && result.getMsgFoundList() != null) {
+                            allMessages.addAll(result.getMsgFoundList());
+                        }
+                    }
+                    allMessages.sort((a, b) -> Long.compare(a.getStoreTimestamp(), b.getStoreTimestamp()));
+                    if (allMessages.size() > finalMaxMsgNums) {
+                        allMessages = new ArrayList<>(allMessages.subList(0, finalMaxMsgNums));
+                    }
+                    if (allMessages.isEmpty()) {
+                        return new PopResult(PopStatus.NO_NEW_MSG, new ArrayList<>());
+                    }
+                    return new PopResult(PopStatus.FOUND, allMessages);
+                }, this.executor);
         } catch (Throwable t) {
             future.completeExceptionally(t);
             FutureUtils.addExecutor(future, this.executor);

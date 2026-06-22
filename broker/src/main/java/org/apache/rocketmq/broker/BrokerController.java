@@ -104,6 +104,7 @@ import org.apache.rocketmq.broker.processor.EndTransactionProcessor;
 import org.apache.rocketmq.broker.processor.LiteManagerProcessor;
 import org.apache.rocketmq.broker.processor.LiteSubscriptionCtlProcessor;
 import org.apache.rocketmq.broker.processor.NotificationProcessor;
+import org.apache.rocketmq.broker.processor.PeekLiteMessageProcessor;
 import org.apache.rocketmq.broker.processor.PeekMessageProcessor;
 import org.apache.rocketmq.broker.processor.PollingInfoProcessor;
 import org.apache.rocketmq.broker.processor.PopInflightMessageCounter;
@@ -216,6 +217,7 @@ public class BrokerController {
     protected final ClientHousekeepingService clientHousekeepingService;
     protected final PullMessageProcessor pullMessageProcessor;
     protected final PeekMessageProcessor peekMessageProcessor;
+    protected final PeekLiteMessageProcessor peekLiteMessageProcessor;
     protected final PopMessageProcessor popMessageProcessor;
     protected final PopLiteMessageProcessor popLiteMessageProcessor;
     protected final AckMessageProcessor ackMessageProcessor;
@@ -404,6 +406,7 @@ public class BrokerController {
         this.liteManagerProcessor = new LiteManagerProcessor(this, liteLifecycleManager, liteSharding);
         this.pullMessageProcessor = new PullMessageProcessor(this);
         this.peekMessageProcessor = new PeekMessageProcessor(this);
+        this.peekLiteMessageProcessor = new PeekLiteMessageProcessor(this);
         this.pullRequestHoldService = messageStoreConfig.isEnableLmq() ? new LmqPullRequestHoldService(this) : new PullRequestHoldService(this);
         this.popMessageProcessor = new PopMessageProcessor(this);
         this.popLiteMessageProcessor = new PopLiteMessageProcessor(this, this.liteEventDispatcher);
@@ -1188,6 +1191,8 @@ public class BrokerController {
          * PeekMessageProcessor
          */
         remotingServer.registerProcessor(RequestCode.PEEK_MESSAGE, this.peekMessageProcessor, this.pullMessageExecutor);
+        remotingServer.registerProcessor(RequestCode.PEEK_LITE_MESSAGE, this.peekLiteMessageProcessor, this.pullMessageExecutor);
+
         /**
          * PopMessageProcessor
          */

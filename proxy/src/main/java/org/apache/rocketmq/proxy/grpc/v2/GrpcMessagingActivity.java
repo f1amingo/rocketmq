@@ -29,6 +29,8 @@ import apache.rocketmq.v2.HeartbeatRequest;
 import apache.rocketmq.v2.HeartbeatResponse;
 import apache.rocketmq.v2.NotifyClientTerminationRequest;
 import apache.rocketmq.v2.NotifyClientTerminationResponse;
+import apache.rocketmq.v2.PeekMessageRequest;
+import apache.rocketmq.v2.PeekMessageResponse;
 import apache.rocketmq.v2.QueryAssignmentRequest;
 import apache.rocketmq.v2.QueryAssignmentResponse;
 import apache.rocketmq.v2.QueryRouteRequest;
@@ -74,6 +76,8 @@ public interface GrpcMessagingActivity extends StartAndShutdown {
         ChangeInvisibleDurationRequest request);
 
     CompletableFuture<RecallMessageResponse> recallMessage(ProxyContext ctx, RecallMessageRequest request);
+
+    CompletableFuture<PeekMessageResponse> peekMessage(ProxyContext ctx, PeekMessageRequest request);
 
     CompletableFuture<SyncLiteSubscriptionResponse> syncLiteSubscription(ProxyContext ctx, SyncLiteSubscriptionRequest request);
 

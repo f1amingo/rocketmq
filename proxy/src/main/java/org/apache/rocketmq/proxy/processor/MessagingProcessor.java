@@ -32,6 +32,8 @@ import org.apache.rocketmq.client.producer.SendResult;
 import org.apache.rocketmq.common.consumer.ConsumeFromWhere;
 import org.apache.rocketmq.common.consumer.ReceiptHandle;
 import org.apache.rocketmq.common.lite.LiteSubscriptionDTO;
+import org.apache.rocketmq.common.lite.OffsetOption;
+import org.apache.rocketmq.common.lite.PeekDirection;
 import org.apache.rocketmq.common.message.Message;
 import org.apache.rocketmq.common.message.MessageQueue;
 import org.apache.rocketmq.common.utils.StartAndShutdown;
@@ -174,6 +176,17 @@ public interface MessagingProcessor extends StartAndShutdown {
         SubscriptionData subscriptionData,
         PopMessageResultFilter popMessageResultFilter,
         String attemptId,
+        long timeoutMillis
+    );
+
+    CompletableFuture<PopResult> peekLiteMessage(
+        ProxyContext ctx,
+        String consumerGroup,
+        String parentTopic,
+        String liteTopic,
+        int maxMsgNums,
+        OffsetOption offsetOption,
+        PeekDirection direction,
         long timeoutMillis
     );
 

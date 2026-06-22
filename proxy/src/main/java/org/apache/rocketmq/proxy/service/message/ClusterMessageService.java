@@ -45,6 +45,7 @@ import org.apache.rocketmq.remoting.protocol.header.EndTransactionRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.GetMaxOffsetRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.GetMinOffsetRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.PopLiteMessageRequestHeader;
+import org.apache.rocketmq.remoting.protocol.header.PeekLiteMessageRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.PopMessageRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.PullMessageRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.QueryConsumerOffsetRequestHeader;
@@ -127,6 +128,21 @@ public class ClusterMessageService implements MessageService {
         long timeoutMillis
     ) {
         return this.mqClientAPIFactory.getClient().popLiteMessageAsync(
+            messageQueue.getBrokerAddr(),
+            messageQueue.getBrokerName(),
+            requestHeader,
+            timeoutMillis
+        );
+    }
+
+    @Override
+    public CompletableFuture<PopResult> peekLiteMessage(
+        ProxyContext ctx,
+        AddressableMessageQueue messageQueue,
+        PeekLiteMessageRequestHeader requestHeader,
+        long timeoutMillis
+    ) {
+        return this.mqClientAPIFactory.getClient().peekLiteMessageAsync(
             messageQueue.getBrokerAddr(),
             messageQueue.getBrokerName(),
             requestHeader,
