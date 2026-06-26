@@ -18,6 +18,7 @@
 package org.apache.rocketmq.proxy.processor;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -30,19 +31,20 @@ import java.util.stream.Collectors;
 import org.apache.commons.collections.CollectionUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.rocketmq.client.consumer.AckResult;
+import org.apache.rocketmq.client.consumer.PeekResult;
 import org.apache.rocketmq.client.consumer.PopResult;
 import org.apache.rocketmq.client.consumer.PopStatus;
 import org.apache.rocketmq.client.consumer.PullResult;
 import org.apache.rocketmq.common.constant.LoggerName;
 import org.apache.rocketmq.common.consumer.ReceiptHandle;
+import org.apache.rocketmq.common.lite.OffsetOption;
+import org.apache.rocketmq.common.lite.PeekDirection;
 import org.apache.rocketmq.common.message.MessageAccessor;
 import org.apache.rocketmq.common.message.MessageClientExt;
 import org.apache.rocketmq.common.message.MessageClientIDSetter;
 import org.apache.rocketmq.common.message.MessageConst;
 import org.apache.rocketmq.common.message.MessageExt;
 import org.apache.rocketmq.common.message.MessageQueue;
-import org.apache.rocketmq.common.lite.OffsetOption;
-import org.apache.rocketmq.common.lite.PeekDirection;
 import org.apache.rocketmq.common.utils.FutureUtils;
 import org.apache.rocketmq.logging.org.slf4j.Logger;
 import org.apache.rocketmq.logging.org.slf4j.LoggerFactory;
@@ -50,6 +52,7 @@ import org.apache.rocketmq.proxy.common.ProxyContext;
 import org.apache.rocketmq.proxy.common.ProxyException;
 import org.apache.rocketmq.proxy.common.ProxyExceptionCode;
 import org.apache.rocketmq.proxy.common.utils.ProxyUtils;
+import org.apache.rocketmq.common.lite.PeekCursor;
 import org.apache.rocketmq.proxy.service.ServiceManager;
 import org.apache.rocketmq.proxy.service.message.ReceiptHandleMessage;
 import org.apache.rocketmq.proxy.service.route.AddressableMessageQueue;
@@ -302,7 +305,7 @@ public class ConsumerProcessor extends AbstractProcessor {
         return future;
     }
 
-    public CompletableFuture<PopResult> peekLiteMessage(
+    public CompletableFuture<PeekResult> peekLiteMessage(
         ProxyContext ctx,
         String consumerGroup,
         String parentTopic,
@@ -312,7 +315,14 @@ public class ConsumerProcessor extends AbstractProcessor {
         PeekDirection direction,
         long timeoutMillis
     ) {
-        CompletableFuture<PopResult> future = new CompletableFuture<>();
+        if (maxMsgNums > ProxyUtils.MAX_MSG_NUMS_FOR_POP_REQUEST) {
+            log.warn("change maxNums from {} to {} for peek lite request, topic:{}, group:{}",
+                maxMsgNums, ProxyUtils.MAX_MSG_NUMS_FOR_POP_REQUEST, parentTopic, consumerGroup);
+            maxMsgNums = ProxyUtils.MAX_MSG_NUMS_FOR_POP_REQUEST;
+        }
+        final int cappedMaxMsgNums = maxMsgNums;
+
+        CompletableFuture<PeekResult> future = new CompletableFuture<>();
         try {
             MessageQueueView messageQueueView =
                 this.serviceManager.getTopicRouteService().getAllMessageQueueView(ctx, parentTopic);
@@ -321,55 +331,129 @@ public class ConsumerProcessor extends AbstractProcessor {
                 throw new ProxyException(ProxyExceptionCode.FORBIDDEN, "no readable queue");
             }
 
-            if (maxMsgNums > ProxyUtils.MAX_MSG_NUMS_FOR_POP_REQUEST) {
-                log.warn("change maxNums from {} to {} for peek lite request, topic:{}, group:{}",
-                    maxMsgNums, ProxyUtils.MAX_MSG_NUMS_FOR_POP_REQUEST, parentTopic, consumerGroup);
-                maxMsgNums = ProxyUtils.MAX_MSG_NUMS_FOR_POP_REQUEST;
-            }
+            PeekCursor peekCursor = PeekCursor.fromOffsetOption(offsetOption);
 
-            PeekLiteMessageRequestHeader requestHeader = new PeekLiteMessageRequestHeader();
-            requestHeader.setParentTopic(parentTopic);
-            requestHeader.setLiteTopic(liteTopic);
-            requestHeader.setConsumerGroup(consumerGroup);
-            requestHeader.setMaxMsgNum(maxMsgNums);
-            if (offsetOption != null) {
-                requestHeader.setOffsetOptionType(offsetOption.getType().name());
-                requestHeader.setOffsetOptionValue(offsetOption.getValue());
-            }
-            requestHeader.setPeekDirection(direction.name());
+            Map<String, PeekLiteMessageRequestHeader> brokerHeaders =
+                buildPeekBrokerHeaders(readQueues, peekCursor, parentTopic, liteTopic,
+                    consumerGroup, cappedMaxMsgNums, offsetOption, direction);
 
-            final int finalMaxMsgNums = maxMsgNums;
+            Map<String, CompletableFuture<PopResult>> brokerFutureMap =
+                fanOutPeekRequests(ctx, readQueues, brokerHeaders, timeoutMillis);
 
-            // Fan out peek to all readable brokers
-            List<CompletableFuture<PopResult>> brokerFutures = readQueues.stream()
-                .map(queue -> this.serviceManager.getMessageService()
-                    .peekLiteMessage(ctx, queue, requestHeader, timeoutMillis)
-                    .exceptionally(ex -> null))
-                .collect(Collectors.toList());
-
-            future = CompletableFuture.allOf(brokerFutures.toArray(new CompletableFuture[0]))
-                .thenApplyAsync(v -> {
-                    List<MessageExt> allMessages = new ArrayList<>();
-                    for (CompletableFuture<PopResult> bf : brokerFutures) {
-                        PopResult result = bf.getNow(null);
-                        if (result != null && result.getMsgFoundList() != null) {
-                            allMessages.addAll(result.getMsgFoundList());
-                        }
-                    }
-                    allMessages.sort((a, b) -> Long.compare(a.getStoreTimestamp(), b.getStoreTimestamp()));
-                    if (allMessages.size() > finalMaxMsgNums) {
-                        allMessages = new ArrayList<>(allMessages.subList(0, finalMaxMsgNums));
-                    }
-                    if (allMessages.isEmpty()) {
-                        return new PopResult(PopStatus.NO_NEW_MSG, new ArrayList<>());
-                    }
-                    return new PopResult(PopStatus.FOUND, allMessages);
-                }, this.executor);
+            future = CompletableFuture.allOf(
+                    brokerFutureMap.values().toArray(new CompletableFuture[0]))
+                .thenApplyAsync(v -> buildPeekResult(
+                    brokerFutureMap, peekCursor, cappedMaxMsgNums, direction), this.executor);
         } catch (Throwable t) {
             future.completeExceptionally(t);
             FutureUtils.addExecutor(future, this.executor);
         }
         return future;
+    }
+
+    private Map<String, PeekLiteMessageRequestHeader> buildPeekBrokerHeaders(
+        List<AddressableMessageQueue> readQueues,
+        PeekCursor peekCursor,
+        String parentTopic,
+        String liteTopic,
+        String consumerGroup,
+        int maxMsgNums,
+        OffsetOption offsetOption,
+        PeekDirection direction
+    ) {
+        Map<String, PeekLiteMessageRequestHeader> headers = new HashMap<>();
+        for (AddressableMessageQueue queue : readQueues) {
+            String brokerName = queue.getBrokerName();
+            if (offsetOption.getType() == OffsetOption.Type.CURSOR
+                && peekCursor.getBrokerOffset(brokerName) == null) {
+                continue;
+            }
+            PeekLiteMessageRequestHeader header = new PeekLiteMessageRequestHeader();
+            header.setParentTopic(parentTopic);
+            header.setLiteTopic(liteTopic);
+            header.setConsumerGroup(consumerGroup);
+            header.setMaxMsgNum(maxMsgNums);
+            header.setPeekDirection(direction.name());
+            if (offsetOption.getType() == OffsetOption.Type.CURSOR) {
+                header.setOffsetOptionType(OffsetOption.Type.OFFSET.name());
+                header.setOffsetOptionValue(peekCursor.getBrokerOffset(brokerName));
+            } else {
+                header.setOffsetOptionType(offsetOption.getType().name());
+                header.setOffsetOptionValue(offsetOption.getValue());
+            }
+            headers.put(brokerName, header);
+        }
+        return headers;
+    }
+
+    private Map<String, CompletableFuture<PopResult>> fanOutPeekRequests(
+        ProxyContext ctx,
+        List<AddressableMessageQueue> readQueues,
+        Map<String, PeekLiteMessageRequestHeader> brokerHeaders,
+        long timeoutMillis
+    ) {
+        Map<String, CompletableFuture<PopResult>> brokerFutureMap = new HashMap<>();
+        for (AddressableMessageQueue queue : readQueues) {
+            String brokerName = queue.getBrokerName();
+            if (!brokerHeaders.containsKey(brokerName)) {
+                continue;
+            }
+            CompletableFuture<PopResult> bf = this.serviceManager.getMessageService()
+                .peekLiteMessage(ctx, queue, brokerHeaders.get(brokerName), timeoutMillis);
+            brokerFutureMap.put(brokerName, bf);
+        }
+        return brokerFutureMap;
+    }
+
+    private PeekResult buildPeekResult(
+        Map<String, CompletableFuture<PopResult>> brokerFutureMap,
+        PeekCursor peekCursor,
+        int maxMsgNums,
+        PeekDirection direction
+    ) {
+        List<MessageExt> mergedMessages = new ArrayList<>();
+        long totalRestNum = 0;
+
+        for (Map.Entry<String, CompletableFuture<PopResult>> entry : brokerFutureMap.entrySet()) {
+            PopResult result = entry.getValue().getNow(null);
+            if (result != null) {
+                totalRestNum += result.getRestNum();
+                if (result.getMsgFoundList() != null && !result.getMsgFoundList().isEmpty()) {
+                    mergedMessages.addAll(result.getMsgFoundList());
+                }
+            }
+        }
+
+        // FORWARD: ascending (oldest first); BACKWARD: descending (newest first)
+        Comparator<MessageExt> cmp = Comparator.comparingLong(MessageExt::getStoreTimestamp);
+        mergedMessages.sort(direction == PeekDirection.FORWARD ? cmp : cmp.reversed());
+        if (mergedMessages.size() > maxMsgNums) {
+            mergedMessages = new ArrayList<>(mergedMessages.subList(0, maxMsgNums));
+        }
+
+        // Calculate nextBrokerOffsets from the truncated list actually returned to client
+        Map<String, Long> nextBrokerOffsets = new HashMap<>();
+        for (MessageExt msg : mergedMessages) {
+            String brokerName = msg.getBrokerName();
+            long currentOffset = msg.getQueueOffset();
+            if (direction == PeekDirection.FORWARD) {
+                // Next page starts after the highest offset seen
+                nextBrokerOffsets.merge(brokerName, currentOffset + 1, Math::max);
+            } else {
+                // Next page starts before the lowest offset seen
+                nextBrokerOffsets.merge(brokerName, currentOffset - 1, Math::min);
+            }
+        }
+        // For brokers with no messages in the truncated list, keep their original cursor offset
+        Set<String> brokerNames = brokerFutureMap.keySet();
+        for (String brokerName : brokerNames) {
+            nextBrokerOffsets.putIfAbsent(brokerName, peekCursor.getBrokerOffset(brokerName));
+        }
+
+        PeekResult peekResult = new PeekResult(PopStatus.FOUND, mergedMessages);
+        peekResult.setHasMore(totalRestNum > 0);
+        peekResult.setEncodedCursor(new PeekCursor(nextBrokerOffsets).encode());
+        return peekResult;
     }
 
     private void fillUniqIDIfNeed(MessageExt messageExt) {

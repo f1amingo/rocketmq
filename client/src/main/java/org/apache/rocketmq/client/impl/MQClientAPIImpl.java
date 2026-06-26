@@ -1312,7 +1312,7 @@ public class MQClientAPIImpl implements NameServerUpdateCallback, StartAndShutdo
     }
 
     private PopResult processPeekLiteResponse(final String brokerName, final RemotingCommand response)
-        throws MQBrokerException {
+        throws MQBrokerException, RemotingCommandException {
         PopStatus popStatus;
         List<MessageExt> msgFoundList = null;
         switch (response.getCode()) {
@@ -1333,6 +1333,8 @@ public class MQClientAPIImpl implements NameServerUpdateCallback, StartAndShutdo
         }
 
         PopResult popResult = new PopResult(popStatus, msgFoundList);
+        PopMessageResponseHeader responseHeader = response.decodeCommandCustomHeader(PopMessageResponseHeader.class);
+        popResult.setRestNum(responseHeader.getRestNum());
         if (popStatus != PopStatus.FOUND) {
             return popResult;
         }

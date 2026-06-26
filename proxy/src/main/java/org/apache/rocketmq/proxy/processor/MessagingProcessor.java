@@ -26,6 +26,7 @@ import org.apache.rocketmq.broker.client.ConsumerGroupInfo;
 import org.apache.rocketmq.broker.client.ConsumerIdsChangeListener;
 import org.apache.rocketmq.broker.client.ProducerChangeListener;
 import org.apache.rocketmq.client.consumer.AckResult;
+import org.apache.rocketmq.client.consumer.PeekResult;
 import org.apache.rocketmq.client.consumer.PopResult;
 import org.apache.rocketmq.client.consumer.PullResult;
 import org.apache.rocketmq.client.producer.SendResult;
@@ -179,7 +180,7 @@ public interface MessagingProcessor extends StartAndShutdown {
         long timeoutMillis
     );
 
-    CompletableFuture<PopResult> peekLiteMessage(
+    CompletableFuture<PeekResult> peekLiteMessage(
         ProxyContext ctx,
         String consumerGroup,
         String parentTopic,

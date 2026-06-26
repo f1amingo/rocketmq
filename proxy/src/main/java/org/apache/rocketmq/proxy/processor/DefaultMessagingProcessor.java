@@ -35,6 +35,7 @@ import org.apache.rocketmq.broker.client.ConsumerGroupInfo;
 import org.apache.rocketmq.broker.client.ConsumerIdsChangeListener;
 import org.apache.rocketmq.broker.client.ProducerChangeListener;
 import org.apache.rocketmq.client.consumer.AckResult;
+import org.apache.rocketmq.client.consumer.PeekResult;
 import org.apache.rocketmq.client.consumer.PopResult;
 import org.apache.rocketmq.client.consumer.PullResult;
 import org.apache.rocketmq.client.producer.SendResult;
@@ -217,7 +218,7 @@ public class DefaultMessagingProcessor extends AbstractStartAndShutdown implemen
     }
 
     @Override
-    public CompletableFuture<PopResult> peekLiteMessage(ProxyContext ctx,
+    public CompletableFuture<PeekResult> peekLiteMessage(ProxyContext ctx,
         String consumerGroup, String parentTopic, String liteTopic, int maxMsgNums,
         OffsetOption offsetOption, PeekDirection direction, long timeoutMillis) {
         return this.consumerProcessor.peekLiteMessage(ctx,

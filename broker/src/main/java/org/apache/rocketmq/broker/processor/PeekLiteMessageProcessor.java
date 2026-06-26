@@ -36,6 +36,7 @@ import org.apache.rocketmq.remoting.netty.NettyRequestProcessor;
 import org.apache.rocketmq.remoting.protocol.RemotingCommand;
 import org.apache.rocketmq.remoting.protocol.ResponseCode;
 import org.apache.rocketmq.remoting.protocol.header.PeekLiteMessageRequestHeader;
+import org.apache.rocketmq.remoting.protocol.header.PopMessageResponseHeader;
 import org.apache.rocketmq.store.GetMessageResult;
 import org.apache.rocketmq.store.GetMessageStatus;
 import org.apache.rocketmq.store.exception.ConsumeQueueException;
@@ -56,8 +57,9 @@ public class PeekLiteMessageProcessor implements NettyRequestProcessor {
         throws RemotingCommandException {
 
         final long beginTimeMills = brokerController.getMessageStore().now();
-        RemotingCommand response = RemotingCommand.createResponseCommand(null);
+        RemotingCommand response = RemotingCommand.createResponseCommand(PopMessageResponseHeader.class);
         response.setOpaque(request.getOpaque());
+        final PopMessageResponseHeader responseHeader = (PopMessageResponseHeader) response.readCustomHeader();
 
         final PeekLiteMessageRequestHeader requestHeader =
             request.decodeCommandCustomHeader(PeekLiteMessageRequestHeader.class, true);
@@ -93,6 +95,10 @@ public class PeekLiteMessageProcessor implements NettyRequestProcessor {
                 .getMessage(group, lmqName, LMQ_QUEUE_ID, startOffset, maxMsgNum, null);
         }
 
+        if (getMessageResult != null) {
+            responseHeader.setRestNum(getMessageResult.getMaxOffset() - getMessageResult.getNextBeginOffset());
+        }
+
         if (getMessageResult != null && getMessageResult.getMessageCount() > 0) {
             response.setCode(ResponseCode.SUCCESS);
             getMessageResult.setStatus(GetMessageStatus.FOUND);
@@ -109,7 +115,9 @@ public class PeekLiteMessageProcessor implements NettyRequestProcessor {
             byte[] body = readGetMessageResult(getMessageResult);
             response.setBody(body);
         } else {
-            response.setCode(ResponseCode.PULL_NOT_FOUND);
+            // Peek is a read-only query; empty result is a valid response, not an error.
+            response.setCode(ResponseCode.SUCCESS);
+            response.setBody(new byte[0]);
             if (getMessageResult != null) {
                 getMessageResult.release();
             }
@@ -204,6 +212,10 @@ public class PeekLiteMessageProcessor implements NettyRequestProcessor {
                     case TIMESTAMP:
                         anchorOffset = brokerController.getMessageStore()
                             .getOffsetInQueueByTime(lmqName, LMQ_QUEUE_ID, value);
+                        break;
+                    case OFFSET:
+                        // Direct offset addressing for cursor-based pagination
+                        anchorOffset = value;
                         break;
                     default:
                         anchorOffset = getConsumerOffset(group, lmqName, minOffset);

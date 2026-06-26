@@ -272,7 +272,8 @@ public class IntegrationTestBase {
             attributes.put("+" + TopicAttributes.TOPIC_MESSAGE_TYPE_ATTRIBUTE.getName(), topicMessageType.toString());
         }
         if (Objects.equals(TopicMessageType.LITE, topicMessageType)) {
-            attributes.put("+" + TopicAttributes.LITE_EXPIRATION_ATTRIBUTE.getName(), liteTtl.toString());
+            long ttl = liteTtl != null ? liteTtl : -1L;
+            attributes.put("+" + TopicAttributes.LITE_EXPIRATION_ATTRIBUTE.getName(), String.valueOf(ttl));
         }
         createResult = MQAdminTestUtils.createTopic(nsAddr, clusterName, topic, queueNumbers, attributes, topicCreateTime);
         return createResult;

@@ -123,4 +123,9 @@ public class ClusterGrpcIT extends GrpcBaseIT {
     public void testSimpleConsumerSendAndRecvPriorityMessage() throws Exception {
         super.testSimpleConsumerSendAndRecvPriorityMessage();
     }
+
+    @Test
+    public void testPeekMessage() throws Exception {
+        super.testPeekMessage();
+    }
 }

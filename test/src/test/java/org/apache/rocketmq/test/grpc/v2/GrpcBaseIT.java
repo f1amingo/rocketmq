@@ -36,6 +36,10 @@ import apache.rocketmq.v2.Message;
 import apache.rocketmq.v2.MessageQueue;
 import apache.rocketmq.v2.MessageType;
 import apache.rocketmq.v2.MessagingServiceGrpc;
+import apache.rocketmq.v2.OffsetOption;
+import apache.rocketmq.v2.PeekDirection;
+import apache.rocketmq.v2.PeekMessageRequest;
+import apache.rocketmq.v2.PeekMessageResponse;
 import apache.rocketmq.v2.Publishing;
 import apache.rocketmq.v2.QueryAssignmentRequest;
 import apache.rocketmq.v2.QueryAssignmentResponse;
@@ -81,8 +85,12 @@ import java.net.URL;
 import java.security.cert.CertificateException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
@@ -96,6 +104,7 @@ import org.apache.rocketmq.client.consumer.DefaultMQPullConsumer;
 import org.apache.rocketmq.client.consumer.PullResult;
 import org.apache.rocketmq.client.consumer.PullStatus;
 import org.apache.rocketmq.common.MixAll;
+import org.apache.rocketmq.common.SubscriptionGroupAttributes;
 import org.apache.rocketmq.common.attribute.TopicMessageType;
 import org.apache.rocketmq.common.message.MessageExt;
 import org.apache.rocketmq.common.utils.NetworkUtil;
@@ -136,8 +145,14 @@ public class GrpcBaseIT extends BaseConf {
 
     public void setUp() throws Exception {
         brokerController1.getBrokerConfig().setTransactionCheckInterval(1 * 1000);
+        brokerController1.getMessageStoreConfig().setEnableLmq(true);
+        brokerController1.getMessageStoreConfig().setEnableMultiDispatch(true);
         brokerController2.getBrokerConfig().setTransactionCheckInterval(1 * 1000);
+        brokerController1.getMessageStoreConfig().setEnableLmq(true);
+        brokerController1.getMessageStoreConfig().setEnableMultiDispatch(true);
         brokerController3.getBrokerConfig().setTransactionCheckInterval(1 * 1000);
+        brokerController1.getMessageStoreConfig().setEnableLmq(true);
+        brokerController1.getMessageStoreConfig().setEnableMultiDispatch(true);
 
         header.put(GrpcConstants.CLIENT_ID, "client-id" + UUID.randomUUID());
         header.put(GrpcConstants.LANGUAGE, "JAVA");
@@ -687,6 +702,78 @@ public class GrpcBaseIT extends BaseConf {
         }
     }
 
+    public void testPeekMessage() throws Exception {
+        String parentTopic = initLiteTopic("peek-parent-topic");
+        String liteTopic = "peek-test-lite";
+        String group = "peek-test-group";
+        int msgCount = 5;
+        Set<String> sentIds = new HashSet<>();
+
+        // Create lite subscription group with liteBindTopic
+        SubscriptionGroupConfig groupConfig = new SubscriptionGroupConfig();
+        groupConfig.setGroupName(group);
+        Map<String, String> attributes = new HashMap<>();
+        attributes.put("+" + SubscriptionGroupAttributes.LITE_BIND_TOPIC_ATTRIBUTE.getName(), parentTopic);
+        groupConfig.setAttributes(attributes);
+        initConsumerGroup(groupConfig);
+
+        // Send lite messages
+        this.sendClientSettings(stub, buildProducerClientSettings(parentTopic)).get();
+        for (int i = 0; i < msgCount; i++) {
+            String messageId = createUniqID();
+            sentIds.add(messageId);
+            blockingStub.sendMessage(buildSendLiteMessageRequest(parentTopic, messageId, liteTopic));
+        }
+
+        Thread.sleep(100L);
+
+        // Wait for lite topic dispatch
+        await().atMost(java.time.Duration.ofSeconds(30)).until(() -> {
+            PeekMessageResponse r = blockingStub.withDeadlineAfter(2, TimeUnit.SECONDS)
+                .peekMessage(buildPeekMessageRequest(parentTopic, liteTopic, group, 1,
+                    OffsetOption.newBuilder().setPolicy(OffsetOption.Policy.LAST).build(),
+                    PeekDirection.FORWARD));
+            return r.getStatus().getCode() == Code.OK;
+        });
+
+        // Scenario 1: basic peek FORWARD, maxMsgNum=3
+        PeekMessageResponse resp1 = blockingStub.withDeadlineAfter(2, TimeUnit.SECONDS).peekMessage(
+            buildPeekMessageRequest(parentTopic, liteTopic, group, 3,
+                OffsetOption.newBuilder().setPolicy(OffsetOption.Policy.LAST).build(),
+                PeekDirection.FORWARD));
+        assertPeekOk(resp1);
+        assertThat(resp1.getMessagesCount()).isEqualTo(3);
+        assertThat(resp1.getHasMore()).isTrue();
+        assertThat(resp1.getCursor()).isNotEmpty();
+
+        // Scenario 2: cursor pagination - peek with cursor from resp1
+        PeekMessageResponse resp2 = blockingStub.withDeadlineAfter(2, TimeUnit.SECONDS).peekMessage(
+            buildPeekMessageRequest(parentTopic, liteTopic, group, 10,
+                OffsetOption.newBuilder().setCursor(resp1.getCursor()).build(),
+                PeekDirection.FORWARD));
+        assertPeekOk(resp2);
+        assertThat(resp2.getMessagesCount()).isEqualTo(2);
+        assertThat(resp2.getHasMore()).isFalse();
+
+        // No overlap between page 1 and page 2
+        Set<String> page1Ids = new HashSet<>();
+        for (Message m : resp1.getMessagesList()) {
+            page1Ids.add(m.getSystemProperties().getMessageId());
+        }
+        Set<String> page2Ids = new HashSet<>();
+        for (Message m : resp2.getMessagesList()) {
+            page2Ids.add(m.getSystemProperties().getMessageId());
+        }
+        assertThat(page1Ids).doesNotContainAnyElementsOf(page2Ids);
+
+        // Scenario 3: no message - peek a liteTopic that was never sent to
+        PeekMessageResponse resp3 = blockingStub.withDeadlineAfter(2, TimeUnit.SECONDS).peekMessage(
+            buildPeekMessageRequest(parentTopic, "non-existent-lite-topic", group, 10,
+                OffsetOption.newBuilder().setPolicy(OffsetOption.Policy.LAST).build(),
+                PeekDirection.FORWARD));
+        assertThat(resp3.getStatus().getCode()).isEqualTo(Code.MESSAGE_NOT_FOUND);
+    }
+
     public List<ReceiveMessageResponse> receiveMessage(MessagingServiceGrpc.MessagingServiceBlockingStub stub,
         String topic, String group) {
         return receiveMessage(stub, topic, group, 15);
@@ -857,6 +944,40 @@ public class GrpcBaseIT extends BaseConf {
             .setInvisibleDuration(Durations.fromSeconds(second))
             .setReceiptHandle(receiptHandle)
             .build();
+    }
+
+    public SendMessageRequest buildSendLiteMessageRequest(String topic, String messageId, String liteTopic) {
+        return SendMessageRequest.newBuilder()
+            .addMessages(Message.newBuilder()
+                .setTopic(Resource.newBuilder().setName(topic).build())
+                .setSystemProperties(SystemProperties.newBuilder()
+                    .setMessageId(messageId)
+                    .setQueueId(0)
+                    .setMessageType(MessageType.LITE)
+                    .setLiteTopic(liteTopic)
+                    .setBornTimestamp(Timestamps.fromMillis(System.currentTimeMillis()))
+                    .setBornHost(StringUtils.defaultString(NetworkUtil.getLocalAddress(), "127.0.0.1:1234"))
+                    .build())
+                .setBody(ByteString.copyFromUtf8("lite-msg"))
+                .build())
+            .build();
+    }
+
+    public PeekMessageRequest buildPeekMessageRequest(String parentTopic, String liteTopic, String group,
+        int maxMsgNum, OffsetOption offsetOption, PeekDirection direction) {
+        return PeekMessageRequest.newBuilder()
+            .setTopic(Resource.newBuilder().setName(parentTopic).build())
+            .setGroup(Resource.newBuilder().setName(group).build())
+            .setLiteTopic(liteTopic)
+            .setMaxMsgNum(maxMsgNum)
+            .setOffsetOption(offsetOption)
+            .setDirection(direction)
+            .build();
+    }
+
+    public void assertPeekOk(PeekMessageResponse response) {
+        assertThat(response.getStatus()).isEqualTo(
+            ResponseBuilder.getInstance().buildStatus(Code.OK, Code.OK.name()));
     }
 
     public void assertQueryRoute(QueryRouteResponse response, int messageQueueSize) {

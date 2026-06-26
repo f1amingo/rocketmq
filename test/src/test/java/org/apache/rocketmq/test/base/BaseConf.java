@@ -198,6 +198,12 @@ public class BaseConf {
         return topicName;
     }
 
+    public static String initLiteTopic(String topicName) {
+        IntegrationTestBase.initTopic(topicName, NAMESRV_ADDR, CLUSTER_NAME, QUEUE_NUMBERS,
+            CQType.SimpleCQ, TopicMessageType.LITE, -1L);
+        return topicName;
+    }
+
     public static String initTopicOnSampleTopicBroker(String topicName, String sampleTopic, TopicMessageType topicMessageType) {
         IntegrationTestBase.initTopic(topicName, NAMESRV_ADDR, sampleTopic, topicMessageType);
         return topicName;
