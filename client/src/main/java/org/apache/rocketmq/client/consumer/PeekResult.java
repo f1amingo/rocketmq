@@ -27,32 +27,19 @@ import org.apache.rocketmq.common.message.MessageExt;
 public class PeekResult extends PopResult {
 
     /**
-     * Opaque encoded pagination cursor. Null when no further page is available.
+     * Opaque pagination cursor. Null when no further page is available.
      */
-    private String encodedCursor;
-
-    /**
-     * Whether more messages exist beyond the current page (server-side fact).
-     */
-    private boolean hasMore;
+    private String cursor;
 
     public PeekResult(PopStatus popStatus, List<MessageExt> msgFoundList) {
         super(popStatus, msgFoundList);
     }
 
-    public String getEncodedCursor() {
-        return encodedCursor;
+    public String getCursor() {
+        return cursor;
     }
 
-    public void setEncodedCursor(String encodedCursor) {
-        this.encodedCursor = encodedCursor;
-    }
-
-    public boolean isHasMore() {
-        return hasMore;
-    }
-
-    public void setHasMore(boolean hasMore) {
-        this.hasMore = hasMore;
+    public void setCursor(String cursor) {
+        this.cursor = cursor;
     }
 }

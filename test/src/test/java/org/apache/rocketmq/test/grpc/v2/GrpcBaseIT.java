@@ -743,8 +743,15 @@ public class GrpcBaseIT extends BaseConf {
                 PeekDirection.FORWARD));
         assertPeekOk(resp1);
         assertThat(resp1.getMessagesCount()).isEqualTo(3);
-        assertThat(resp1.getHasMore()).isTrue();
+        assertThat(resp1.getRestNum()).isGreaterThan(0);
         assertThat(resp1.getCursor()).isNotEmpty();
+
+        // Verify FORWARD returns messages in storeTimestamp ascending order
+        for (int i = 0; i < resp1.getMessagesCount() - 1; i++) {
+            long cur = Timestamps.toMillis(resp1.getMessages(i).getSystemProperties().getStoreTimestamp());
+            long next = Timestamps.toMillis(resp1.getMessages(i + 1).getSystemProperties().getStoreTimestamp());
+            assertThat(cur).isLessThanOrEqualTo(next);
+        }
 
         // Scenario 2: cursor pagination - peek with cursor from resp1
         PeekMessageResponse resp2 = blockingStub.withDeadlineAfter(2, TimeUnit.SECONDS).peekMessage(
@@ -753,7 +760,20 @@ public class GrpcBaseIT extends BaseConf {
                 PeekDirection.FORWARD));
         assertPeekOk(resp2);
         assertThat(resp2.getMessagesCount()).isEqualTo(2);
-        assertThat(resp2.getHasMore()).isFalse();
+        assertThat(resp2.getRestNum()).isEqualTo(0);
+
+        // Verify page2 internal storeTimestamp ascending order
+        for (int i = 0; i < resp2.getMessagesCount() - 1; i++) {
+            long cur = Timestamps.toMillis(resp2.getMessages(i).getSystemProperties().getStoreTimestamp());
+            long next = Timestamps.toMillis(resp2.getMessages(i + 1).getSystemProperties().getStoreTimestamp());
+            assertThat(cur).isLessThanOrEqualTo(next);
+        }
+        // Cross-page: page1 tail <= page2 head
+        long page1Tail = Timestamps.toMillis(
+            resp1.getMessages(resp1.getMessagesCount() - 1).getSystemProperties().getStoreTimestamp());
+        long page2Head = Timestamps.toMillis(
+            resp2.getMessages(0).getSystemProperties().getStoreTimestamp());
+        assertThat(page1Tail).isLessThanOrEqualTo(page2Head);
 
         // No overlap between page 1 and page 2
         Set<String> page1Ids = new HashSet<>();
@@ -766,12 +786,73 @@ public class GrpcBaseIT extends BaseConf {
         }
         assertThat(page1Ids).doesNotContainAnyElementsOf(page2Ids);
 
-        // Scenario 3: no message - peek a liteTopic that was never sent to
+        // Scenario 3: no message - peek a liteTopic that was never sent to; empty result is a valid OK response.
         PeekMessageResponse resp3 = blockingStub.withDeadlineAfter(2, TimeUnit.SECONDS).peekMessage(
             buildPeekMessageRequest(parentTopic, "non-existent-lite-topic", group, 10,
                 OffsetOption.newBuilder().setPolicy(OffsetOption.Policy.LAST).build(),
                 PeekDirection.FORWARD));
-        assertThat(resp3.getStatus().getCode()).isEqualTo(Code.MESSAGE_NOT_FOUND);
+        assertThat(resp3.getStatus().getCode()).isEqualTo(Code.OK);
+        assertThat(resp3.getMessagesList()).isEmpty();
+
+        // === BACKWARD direction tests ===
+
+        // Scenario 4: BACKWARD from MAX, maxMsgNum=3 → newest 3 messages
+        PeekMessageResponse resp4 = blockingStub.withDeadlineAfter(2, TimeUnit.SECONDS).peekMessage(
+            buildPeekMessageRequest(parentTopic, liteTopic, group, 3,
+                OffsetOption.newBuilder().setPolicy(OffsetOption.Policy.MAX).build(),
+                PeekDirection.BACKWARD));
+        assertPeekOk(resp4);
+        assertThat(resp4.getMessagesCount()).isEqualTo(3);
+        assertThat(resp4.getRestNum()).isGreaterThan(0);
+        assertThat(resp4.getCursor()).isNotEmpty();
+
+        // Verify BACKWARD storeTimestamp descending (newest first)
+        for (int i = 0; i < resp4.getMessagesCount() - 1; i++) {
+            long cur = Timestamps.toMillis(resp4.getMessages(i).getSystemProperties().getStoreTimestamp());
+            long next = Timestamps.toMillis(resp4.getMessages(i + 1).getSystemProperties().getStoreTimestamp());
+            assertThat(cur).isGreaterThanOrEqualTo(next);
+        }
+
+        // Scenario 5: BACKWARD cursor pagination → remaining 2 messages
+        PeekMessageResponse resp5 = blockingStub.withDeadlineAfter(2, TimeUnit.SECONDS).peekMessage(
+            buildPeekMessageRequest(parentTopic, liteTopic, group, 10,
+                OffsetOption.newBuilder().setCursor(resp4.getCursor()).build(),
+                PeekDirection.BACKWARD));
+        assertPeekOk(resp5);
+        assertThat(resp5.getMessagesCount()).isEqualTo(2);
+        assertThat(resp5.getRestNum()).isEqualTo(0);
+
+        // Verify page5 internal storeTimestamp descending
+        for (int i = 0; i < resp5.getMessagesCount() - 1; i++) {
+            long cur = Timestamps.toMillis(resp5.getMessages(i).getSystemProperties().getStoreTimestamp());
+            long next = Timestamps.toMillis(resp5.getMessages(i + 1).getSystemProperties().getStoreTimestamp());
+            assertThat(cur).isGreaterThanOrEqualTo(next);
+        }
+        // Cross-page: page4 tail >= page5 head
+        long page4Tail = Timestamps.toMillis(
+            resp4.getMessages(resp4.getMessagesCount() - 1).getSystemProperties().getStoreTimestamp());
+        long page5Head = Timestamps.toMillis(
+            resp5.getMessages(0).getSystemProperties().getStoreTimestamp());
+        assertThat(page4Tail).isGreaterThanOrEqualTo(page5Head);
+
+        // No overlap between backward page 1 and page 2
+        Set<String> page4Ids = new HashSet<>();
+        for (Message m : resp4.getMessagesList()) {
+            page4Ids.add(m.getSystemProperties().getMessageId());
+        }
+        Set<String> page5Ids = new HashSet<>();
+        for (Message m : resp5.getMessagesList()) {
+            page5Ids.add(m.getSystemProperties().getMessageId());
+        }
+        assertThat(page4Ids).doesNotContainAnyElementsOf(page5Ids);
+
+        // Scenario 6: BACKWARD past queue head → empty result is a valid OK response
+        PeekMessageResponse resp6 = blockingStub.withDeadlineAfter(2, TimeUnit.SECONDS).peekMessage(
+            buildPeekMessageRequest(parentTopic, liteTopic, group, 10,
+                OffsetOption.newBuilder().setCursor(resp5.getCursor()).build(),
+                PeekDirection.BACKWARD));
+        assertThat(resp6.getStatus().getCode()).isEqualTo(Code.OK);
+        assertThat(resp6.getMessagesList()).isEmpty();
     }
 
     public List<ReceiveMessageResponse> receiveMessage(MessagingServiceGrpc.MessagingServiceBlockingStub stub,

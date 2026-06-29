@@ -1318,15 +1318,16 @@ public class MQClientAPIImpl implements NameServerUpdateCallback, StartAndShutdo
         switch (response.getCode()) {
             case ResponseCode.SUCCESS:
                 popStatus = PopStatus.FOUND;
-                ByteBuffer byteBuffer = ByteBuffer.wrap(response.getBody());
-                msgFoundList = MessageDecoder.decodesBatch(
-                    byteBuffer,
-                    clientConfig.isDecodeReadBody(),
-                    clientConfig.isDecodeDecompressBody(),
-                    true);
-                break;
-            case ResponseCode.PULL_NOT_FOUND:
-                popStatus = PopStatus.POLLING_NOT_FOUND;
+                if (response.getBody() == null || response.getBody().length == 0) {
+                    msgFoundList = Collections.emptyList();
+                } else {
+                    ByteBuffer byteBuffer = ByteBuffer.wrap(response.getBody());
+                    msgFoundList = MessageDecoder.decodesBatch(
+                        byteBuffer,
+                        clientConfig.isDecodeReadBody(),
+                        clientConfig.isDecodeDecompressBody(),
+                        true);
+                }
                 break;
             default:
                 throw new MQBrokerException(response.getCode(), response.getRemark());
@@ -1335,9 +1336,6 @@ public class MQClientAPIImpl implements NameServerUpdateCallback, StartAndShutdo
         PopResult popResult = new PopResult(popStatus, msgFoundList);
         PopMessageResponseHeader responseHeader = response.decodeCommandCustomHeader(PopMessageResponseHeader.class);
         popResult.setRestNum(responseHeader.getRestNum());
-        if (popStatus != PopStatus.FOUND) {
-            return popResult;
-        }
 
         for (MessageExt messageExt : msgFoundList) {
             messageExt.setBrokerName(brokerName);

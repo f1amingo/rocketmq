@@ -364,9 +364,12 @@ public class ConsumerProcessor extends AbstractProcessor {
         Map<String, PeekLiteMessageRequestHeader> headers = new HashMap<>();
         for (AddressableMessageQueue queue : readQueues) {
             String brokerName = queue.getBrokerName();
-            if (offsetOption.getType() == OffsetOption.Type.CURSOR
-                && peekCursor.getBrokerOffset(brokerName) == null) {
-                continue;
+            if (offsetOption.getType() == OffsetOption.Type.CURSOR) {
+                Long cursorOffset = peekCursor.getBrokerOffset(brokerName);
+                if (cursorOffset == null || cursorOffset < 0) {
+                    // null: broker not in cursor; negative: Backward past queue head — skip both
+                    continue;
+                }
             }
             PeekLiteMessageRequestHeader header = new PeekLiteMessageRequestHeader();
             header.setParentTopic(parentTopic);
@@ -427,6 +430,8 @@ public class ConsumerProcessor extends AbstractProcessor {
         // FORWARD: ascending (oldest first); BACKWARD: descending (newest first)
         Comparator<MessageExt> cmp = Comparator.comparingLong(MessageExt::getStoreTimestamp);
         mergedMessages.sort(direction == PeekDirection.FORWARD ? cmp : cmp.reversed());
+        // restNum = broker-side remaining (beyond fetched) + fetched but truncated by maxMsgNums
+        long restNum = totalRestNum + Math.max(0, mergedMessages.size() - maxMsgNums);
         if (mergedMessages.size() > maxMsgNums) {
             mergedMessages = new ArrayList<>(mergedMessages.subList(0, maxMsgNums));
         }
@@ -451,8 +456,8 @@ public class ConsumerProcessor extends AbstractProcessor {
         }
 
         PeekResult peekResult = new PeekResult(PopStatus.FOUND, mergedMessages);
-        peekResult.setHasMore(totalRestNum > 0);
-        peekResult.setEncodedCursor(new PeekCursor(nextBrokerOffsets).encode());
+        peekResult.setRestNum(restNum);
+        peekResult.setCursor(new PeekCursor(nextBrokerOffsets).encode());
         return peekResult;
     }
 

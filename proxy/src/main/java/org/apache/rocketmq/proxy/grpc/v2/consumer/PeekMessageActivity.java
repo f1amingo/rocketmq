@@ -121,11 +121,11 @@ public class PeekMessageActivity extends AbstractMessagingActivity {
             .setStatus(ResponseBuilder.getInstance().buildStatus(Code.OK, Code.OK.name()))
             .addAllMessages(messages);
 
-        String cursor = peekResult.getEncodedCursor();
+        String cursor = peekResult.getCursor();
         if (cursor != null && !cursor.isEmpty()) {
             responseBuilder.setCursor(cursor);
         }
-        responseBuilder.setHasMore(peekResult.isHasMore());
+        responseBuilder.setRestNum(peekResult.getRestNum());
 
         return responseBuilder.build();
     }

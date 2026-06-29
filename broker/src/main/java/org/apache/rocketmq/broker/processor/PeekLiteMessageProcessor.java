@@ -76,15 +76,43 @@ public class PeekLiteMessageProcessor implements NettyRequestProcessor {
         String lmqName = LiteUtil.toLmqName(parentTopic, liteTopic);
         PeekDirection direction = requestHeader.toPeekDirection();
 
-        long startOffset = resolveStartOffset(requestHeader.toOffsetOption(), direction, lmqName, group, maxMsgNum);
-        if (startOffset < 0) {
+        long minOffset = brokerController.getMessageStore().getMinOffsetInQueue(lmqName, LMQ_QUEUE_ID);
+        if (minOffset < 0) {
+            response.setCode(ResponseCode.SYSTEM_ERROR);
+            response.setRemark("failed to get minOffset for lmq: " + lmqName);
+            return response;
+        }
+
+        long maxOffset;
+        try {
+            maxOffset = brokerController.getMessageStore().getMaxOffsetInQueue(lmqName, LMQ_QUEUE_ID);
+        } catch (ConsumeQueueException e) {
+            response.setCode(ResponseCode.SYSTEM_ERROR);
+            response.setRemark("failed to get maxOffset for lmq: " + lmqName);
+            return response;
+        }
+
+        long anchorOffset = resolveAnchorOffset(requestHeader.toOffsetOption(), direction, lmqName, group, minOffset, maxOffset);
+        if (anchorOffset < 0) {
             response.setCode(ResponseCode.SYSTEM_ERROR);
             response.setRemark("failed to resolve start offset for lmq: " + lmqName);
             return response;
         }
 
-        GetMessageResult getMessageResult = brokerController.getMessageStore()
-            .getMessage(group, lmqName, LMQ_QUEUE_ID, startOffset, maxMsgNum, null);
+        long startOffset;
+        int readNum;
+        if (direction == PeekDirection.BACKWARD) {
+            // BACKWARD: read [startOffset, anchorOffset), cap readNum to avoid reading past anchor
+            startOffset = Math.max(minOffset, anchorOffset - maxMsgNum);
+            readNum = (int) (anchorOffset - startOffset);
+        } else {
+            startOffset = anchorOffset;
+            readNum = maxMsgNum;
+        }
+
+        GetMessageResult getMessageResult = readNum > 0
+            ? brokerController.getMessageStore().getMessage(group, lmqName, LMQ_QUEUE_ID, startOffset, readNum, null)
+            : null;
 
         // Correct offset if store reports inconsistency
         if (getMessageResult != null && (
@@ -92,11 +120,19 @@ public class PeekLiteMessageProcessor implements NettyRequestProcessor {
                 || GetMessageStatus.OFFSET_OVERFLOW_BADLY.equals(getMessageResult.getStatus()))) {
             startOffset = getMessageResult.getNextBeginOffset();
             getMessageResult = brokerController.getMessageStore()
-                .getMessage(group, lmqName, LMQ_QUEUE_ID, startOffset, maxMsgNum, null);
+                .getMessage(group, lmqName, LMQ_QUEUE_ID, startOffset, readNum, null);
         }
 
         if (getMessageResult != null) {
-            responseHeader.setRestNum(getMessageResult.getMaxOffset() - getMessageResult.getNextBeginOffset());
+            long restNum;
+            if (direction == PeekDirection.BACKWARD) {
+                // Backward: remaining messages before current page
+                restNum = startOffset - minOffset;
+            } else {
+                // Forward: remaining messages after current page
+                restNum = getMessageResult.getMaxOffset() - getMessageResult.getNextBeginOffset();
+            }
+            responseHeader.setRestNum(restNum);
         }
 
         if (getMessageResult != null && getMessageResult.getMessageCount() > 0) {
@@ -117,13 +153,10 @@ public class PeekLiteMessageProcessor implements NettyRequestProcessor {
         } else {
             // Peek is a read-only query; empty result is a valid response, not an error.
             response.setCode(ResponseCode.SUCCESS);
-            response.setBody(new byte[0]);
             if (getMessageResult != null) {
                 getMessageResult.release();
             }
         }
-        response.setRemark(getMessageResult != null ? getMessageResult.getStatus().name()
-            : GetMessageStatus.NO_MESSAGE_IN_QUEUE.name());
         return response;
     }
 
@@ -182,55 +215,45 @@ public class PeekLiteMessageProcessor implements NettyRequestProcessor {
             return response;
         }
 
+        String lmqName = LiteUtil.toLmqName(requestHeader.getParentTopic(), requestHeader.getLiteTopic());
+        if (!brokerController.getLiteLifecycleManager().isLmqExist(lmqName)) {
+            response.setCode(ResponseCode.SUCCESS);
+            return response;
+        }
+
         return null;
     }
 
-    private long resolveStartOffset(OffsetOption offsetOption, PeekDirection direction,
-        String lmqName, String group, int maxMsgNum) {
-        try {
-            long minOffset = brokerController.getMessageStore().getMinOffsetInQueue(lmqName, LMQ_QUEUE_ID);
-            long maxOffset = brokerController.getMessageStore().getMaxOffsetInQueue(lmqName, LMQ_QUEUE_ID);
-
-            long anchorOffset;
-            if (offsetOption == null) {
-                // Default: LAST - consumer offset, fallback to min
-                anchorOffset = getConsumerOffset(group, lmqName, minOffset);
-            } else {
-                OffsetOption.Type type = offsetOption.getType();
-                long value = offsetOption.getValue();
-                switch (type) {
-                    case POLICY:
-                        if (value == OffsetOption.POLICY_MIN_VALUE) {
-                            anchorOffset = minOffset;
-                        } else if (value == OffsetOption.POLICY_MAX_VALUE) {
-                            anchorOffset = maxOffset;
-                        } else {
-                            // POLICY_LAST (default)
-                            anchorOffset = getConsumerOffset(group, lmqName, minOffset);
-                        }
-                        break;
-                    case TIMESTAMP:
-                        anchorOffset = brokerController.getMessageStore()
-                            .getOffsetInQueueByTime(lmqName, LMQ_QUEUE_ID, value);
-                        break;
-                    case OFFSET:
-                        // Direct offset addressing for cursor-based pagination
-                        anchorOffset = value;
-                        break;
-                    default:
-                        anchorOffset = getConsumerOffset(group, lmqName, minOffset);
-                        break;
+    /**
+     * Resolve the anchor offset from the given offset option.
+     * For BACKWARD reads, the anchor is the exclusive upper bound — messages in [startOffset, anchor) are read.
+     * For FORWARD reads, the anchor is the inclusive start offset.
+     */
+    private long resolveAnchorOffset(OffsetOption offsetOption, PeekDirection direction, String lmqName, String group,
+        long minOffset, long maxOffset) {
+        if (offsetOption == null) {
+            return getConsumerOffset(group, lmqName, minOffset);
+        }
+        OffsetOption.Type type = offsetOption.getType();
+        long value = offsetOption.getValue();
+        switch (type) {
+            case POLICY:
+                if (value == OffsetOption.POLICY_MIN_VALUE) {
+                    return minOffset;
+                } else if (value == OffsetOption.POLICY_MAX_VALUE) {
+                    return maxOffset;
+                } else {
+                    return getConsumerOffset(group, lmqName, minOffset);
                 }
-            }
-
-            if (direction == PeekDirection.BACKWARD) {
-                // Read maxMsgNum messages ending at anchor
-                return Math.max(minOffset, anchorOffset - maxMsgNum);
-            }
-            return anchorOffset;
-        } catch (ConsumeQueueException e) {
-            LOGGER.error("Failed to resolve start offset for lmq={}", lmqName, e);
-            return -1;
+            case TIMESTAMP:
+                return brokerController.getMessageStore()
+                    .getOffsetInQueueByTime(lmqName, LMQ_QUEUE_ID, value);
+            case OFFSET:
+                // FORWARD cursor: value is inclusive start offset, use as-is.
+                // BACKWARD cursor: value is the last offset to include; +1 to convert to exclusive upper bound.
+                return direction == PeekDirection.BACKWARD ? value + 1 : value;
+            default:
+                return getConsumerOffset(group, lmqName, minOffset);
         }
     }
 
