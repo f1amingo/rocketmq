@@ -743,7 +743,7 @@ public class GrpcBaseIT extends BaseConf {
                 PeekDirection.FORWARD));
         assertPeekOk(resp1);
         assertThat(resp1.getMessagesCount()).isEqualTo(3);
-        assertThat(resp1.getRestNum()).isGreaterThan(0);
+        assertThat(resp1.getRestNum()).isEqualTo(msgCount - 3);
         assertThat(resp1.getCursor()).isNotEmpty();
 
         // Verify FORWARD returns messages in storeTimestamp ascending order
@@ -803,7 +803,7 @@ public class GrpcBaseIT extends BaseConf {
                 PeekDirection.BACKWARD));
         assertPeekOk(resp4);
         assertThat(resp4.getMessagesCount()).isEqualTo(3);
-        assertThat(resp4.getRestNum()).isGreaterThan(0);
+        assertThat(resp4.getRestNum()).isEqualTo(msgCount - 3);
         assertThat(resp4.getCursor()).isNotEmpty();
 
         // Verify BACKWARD storeTimestamp descending (newest first)

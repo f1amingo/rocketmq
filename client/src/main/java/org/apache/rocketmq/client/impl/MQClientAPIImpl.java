@@ -1339,6 +1339,11 @@ public class MQClientAPIImpl implements NameServerUpdateCallback, StartAndShutdo
 
         for (MessageExt messageExt : msgFoundList) {
             messageExt.setBrokerName(brokerName);
+            String[] queueOffsets = StringUtils.split(
+                messageExt.getProperty(MessageConst.PROPERTY_INNER_MULTI_QUEUE_OFFSET), MixAll.LMQ_DISPATCH_SEPARATOR);
+            if (queueOffsets != null && queueOffsets.length == 1) {
+                messageExt.setQueueOffset(Long.parseLong(queueOffsets[0]));
+            }
         }
         return popResult;
     }
