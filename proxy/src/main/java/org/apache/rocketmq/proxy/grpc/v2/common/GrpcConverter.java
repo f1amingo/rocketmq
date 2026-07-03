@@ -39,6 +39,7 @@ import org.apache.commons.lang3.StringUtils;
 import org.apache.rocketmq.common.attribute.TopicMessageType;
 import org.apache.rocketmq.common.constant.LoggerName;
 import org.apache.rocketmq.common.filter.ExpressionType;
+import org.apache.rocketmq.common.lite.Cursor;
 import org.apache.rocketmq.common.message.MessageConst;
 import org.apache.rocketmq.common.message.MessageExt;
 import org.apache.rocketmq.common.sysflag.MessageSysFlag;
@@ -278,5 +279,30 @@ public class GrpcConverter {
             default:
                 return MessageType.NORMAL;
         }
+    }
+
+    /**
+     * Convert proto Cursor to POJO Cursor.
+     */
+    public static Cursor toPojoCursor(apache.rocketmq.v2.Cursor proto) {
+        Map<String, long[]> ranges = new HashMap<>();
+        for (Map.Entry<String, apache.rocketmq.v2.Cursor.OffsetRange> entry : proto.getRangesMap().entrySet()) {
+            ranges.put(entry.getKey(), new long[]{entry.getValue().getBegin(), entry.getValue().getEnd()});
+        }
+        return new Cursor(ranges);
+    }
+
+    /**
+     * Convert POJO Cursor to proto Cursor.
+     */
+    public static apache.rocketmq.v2.Cursor toProtoCursor(Cursor pojo) {
+        apache.rocketmq.v2.Cursor.Builder builder = apache.rocketmq.v2.Cursor.newBuilder();
+        for (Map.Entry<String, long[]> entry : pojo.getRanges().entrySet()) {
+            builder.putRanges(entry.getKey(), apache.rocketmq.v2.Cursor.OffsetRange.newBuilder()
+                .setBegin(entry.getValue()[0])
+                .setEnd(entry.getValue()[1])
+                .build());
+        }
+        return builder.build();
     }
 }

@@ -17,6 +17,7 @@
 package org.apache.rocketmq.client.consumer;
 
 import java.util.List;
+import org.apache.rocketmq.common.lite.Cursor;
 import org.apache.rocketmq.common.message.MessageExt;
 
 /**
@@ -27,19 +28,19 @@ import org.apache.rocketmq.common.message.MessageExt;
 public class PeekResult extends PopResult {
 
     /**
-     * Opaque pagination cursor. Null when no further page is available.
+     * Structured pagination cursor. Null when no further page is available.
      */
-    private String cursor;
+    private Cursor cursor;
 
     public PeekResult(PopStatus popStatus, List<MessageExt> msgFoundList) {
         super(popStatus, msgFoundList);
     }
 
-    public String getCursor() {
+    public Cursor getCursor() {
         return cursor;
     }
 
-    public void setCursor(String cursor) {
+    public void setCursor(Cursor cursor) {
         this.cursor = cursor;
     }
 }

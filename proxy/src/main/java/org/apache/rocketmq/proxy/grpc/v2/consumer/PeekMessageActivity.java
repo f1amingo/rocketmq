@@ -25,6 +25,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import org.apache.rocketmq.client.consumer.PeekResult;
+import org.apache.rocketmq.common.lite.Cursor;
 import org.apache.rocketmq.common.lite.OffsetOption;
 import org.apache.rocketmq.common.lite.PeekDirection;
 import org.apache.rocketmq.common.message.MessageExt;
@@ -85,7 +86,7 @@ public class PeekMessageActivity extends AbstractMessagingActivity {
             case TIMESTAMP:
                 return new OffsetOption(OffsetOption.Type.TIMESTAMP, protoOption.getTimestamp());
             case CURSOR:
-                return OffsetOption.ofCursor(protoOption.getCursor());
+                return OffsetOption.ofCursor(GrpcConverter.toPojoCursor(protoOption.getCursor()));
             default:
                 throw new IllegalArgumentException(
                     "Unsupported offset type for peek: " + protoOption.getOffsetTypeCase());
@@ -121,9 +122,9 @@ public class PeekMessageActivity extends AbstractMessagingActivity {
             .setStatus(ResponseBuilder.getInstance().buildStatus(Code.OK, Code.OK.name()))
             .addAllMessages(messages);
 
-        String cursor = peekResult.getCursor();
-        if (cursor != null && !cursor.isEmpty()) {
-            responseBuilder.setCursor(cursor);
+        Cursor pojoCursor = peekResult.getCursor();
+        if (pojoCursor != null && !pojoCursor.isEmpty()) {
+            responseBuilder.setCursor(GrpcConverter.toProtoCursor(pojoCursor));
         }
         responseBuilder.setRestNum(peekResult.getRestNum());
 

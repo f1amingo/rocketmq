@@ -255,6 +255,10 @@ public class ClientActivity extends AbstractMessagingActivity {
                 offsetOption.setType(OffsetOption.Type.TIMESTAMP);
                 offsetOption.setValue(gRpcOffsetOption.getTimestamp());
                 break;
+            case CURSOR:
+                offsetOption.setType(OffsetOption.Type.CURSOR);
+                offsetOption.setCursor(GrpcConverter.toPojoCursor(gRpcOffsetOption.getCursor()));
+                break;
             default:
                 throw new IllegalArgumentException("Unknown OffsetOption type: " + gRpcOffsetOption.getOffsetTypeCase());
         }

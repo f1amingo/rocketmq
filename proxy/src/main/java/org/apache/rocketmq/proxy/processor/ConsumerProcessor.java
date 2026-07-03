@@ -52,7 +52,7 @@ import org.apache.rocketmq.proxy.common.ProxyContext;
 import org.apache.rocketmq.proxy.common.ProxyException;
 import org.apache.rocketmq.proxy.common.ProxyExceptionCode;
 import org.apache.rocketmq.proxy.common.utils.ProxyUtils;
-import org.apache.rocketmq.common.lite.PeekCursor;
+import org.apache.rocketmq.common.lite.Cursor;
 import org.apache.rocketmq.proxy.service.ServiceManager;
 import org.apache.rocketmq.proxy.service.message.ReceiptHandleMessage;
 import org.apache.rocketmq.proxy.service.route.AddressableMessageQueue;
@@ -331,10 +331,10 @@ public class ConsumerProcessor extends AbstractProcessor {
                 throw new ProxyException(ProxyExceptionCode.FORBIDDEN, "no readable queue");
             }
 
-            PeekCursor peekCursor = PeekCursor.fromOffsetOption(offsetOption);
+            Cursor cursor = Cursor.fromOffsetOption(offsetOption);
 
             Map<String, PeekLiteMessageRequestHeader> brokerHeaders =
-                buildPeekBrokerHeaders(readQueues, peekCursor, parentTopic, liteTopic,
+                buildPeekBrokerHeaders(readQueues, cursor, parentTopic, liteTopic,
                     consumerGroup, cappedMaxMsgNums, offsetOption, direction);
 
             Map<String, CompletableFuture<PopResult>> brokerFutureMap =
@@ -343,7 +343,7 @@ public class ConsumerProcessor extends AbstractProcessor {
             future = CompletableFuture.allOf(
                     brokerFutureMap.values().toArray(new CompletableFuture[0]))
                 .thenApplyAsync(v -> buildPeekResult(
-                    brokerFutureMap, peekCursor, cappedMaxMsgNums, direction), this.executor);
+                    brokerFutureMap, cappedMaxMsgNums, direction), this.executor);
         } catch (Throwable t) {
             future.completeExceptionally(t);
             FutureUtils.addExecutor(future, this.executor);
@@ -353,7 +353,7 @@ public class ConsumerProcessor extends AbstractProcessor {
 
     private Map<String, PeekLiteMessageRequestHeader> buildPeekBrokerHeaders(
         List<AddressableMessageQueue> readQueues,
-        PeekCursor peekCursor,
+        Cursor cursor,
         String parentTopic,
         String liteTopic,
         String consumerGroup,
@@ -364,26 +364,37 @@ public class ConsumerProcessor extends AbstractProcessor {
         Map<String, PeekLiteMessageRequestHeader> headers = new HashMap<>();
         for (AddressableMessageQueue queue : readQueues) {
             String brokerName = queue.getBrokerName();
+
+            // Resolve offset option: from cursor range or original policy/timestamp
+            String optionType;
+            long optionValue;
             if (offsetOption.getType() == OffsetOption.Type.CURSOR) {
-                Long cursorOffset = peekCursor.getBrokerOffset(brokerName);
-                if (cursorOffset == null || cursorOffset < 0) {
-                    // null: broker not in cursor; negative: Backward past queue head — skip both
+                long[] range = cursor.getRange(brokerName);
+                if (range == null) {
+                    // broker not in cursor — skip
                     continue;
                 }
+                // Half-open [begin, end): FORWARD uses end as inclusive start;
+                // BACKWARD uses begin-1 (broker adds +1 to recover exclusive upper bound)
+                optionValue = (direction == PeekDirection.FORWARD) ? range[1] : range[0] - 1;
+                if (optionValue < 0) {
+                    // backward past queue head — skip
+                    continue;
+                }
+                optionType = OffsetOption.Type.OFFSET.name();
+            } else {
+                optionType = offsetOption.getType().name();
+                optionValue = offsetOption.getValue();
             }
+
             PeekLiteMessageRequestHeader header = new PeekLiteMessageRequestHeader();
             header.setParentTopic(parentTopic);
             header.setLiteTopic(liteTopic);
             header.setConsumerGroup(consumerGroup);
             header.setMaxMsgNum(maxMsgNums);
             header.setPeekDirection(direction.name());
-            if (offsetOption.getType() == OffsetOption.Type.CURSOR) {
-                header.setOffsetOptionType(OffsetOption.Type.OFFSET.name());
-                header.setOffsetOptionValue(peekCursor.getBrokerOffset(brokerName));
-            } else {
-                header.setOffsetOptionType(offsetOption.getType().name());
-                header.setOffsetOptionValue(offsetOption.getValue());
-            }
+            header.setOffsetOptionType(optionType);
+            header.setOffsetOptionValue(optionValue);
             headers.put(brokerName, header);
         }
         return headers;
@@ -410,7 +421,6 @@ public class ConsumerProcessor extends AbstractProcessor {
 
     private PeekResult buildPeekResult(
         Map<String, CompletableFuture<PopResult>> brokerFutureMap,
-        PeekCursor peekCursor,
         int maxMsgNums,
         PeekDirection direction
     ) {
@@ -436,28 +446,27 @@ public class ConsumerProcessor extends AbstractProcessor {
             mergedMessages = new ArrayList<>(mergedMessages.subList(0, maxMsgNums));
         }
 
-        // Calculate nextBrokerOffsets from the truncated list actually returned to client
-        Map<String, Long> nextBrokerOffsets = new HashMap<>();
+        if (mergedMessages.isEmpty()) {
+            PeekResult peekResult = new PeekResult(PopStatus.FOUND, mergedMessages);
+            peekResult.setRestNum(restNum);
+            // No messages → no interval → null cursor
+            peekResult.setCursor(null);
+            return peekResult;
+        }
+
+        // Build half-open interval [begin, end) per broker from actual message offsets.
+        // Direction-independent: begin = min offset, end = max offset + 1.
+        Map<String, long[]> offsetRanges = new HashMap<>();
         for (MessageExt msg : mergedMessages) {
             String brokerName = msg.getBrokerName();
-            long currentOffset = msg.getQueueOffset();
-            if (direction == PeekDirection.FORWARD) {
-                // Next page starts after the highest offset seen
-                nextBrokerOffsets.merge(brokerName, currentOffset + 1, Math::max);
-            } else {
-                // Next page starts before the lowest offset seen
-                nextBrokerOffsets.merge(brokerName, currentOffset - 1, Math::min);
-            }
-        }
-        // For brokers with no messages in the truncated list, keep their original cursor offset
-        Set<String> brokerNames = brokerFutureMap.keySet();
-        for (String brokerName : brokerNames) {
-            nextBrokerOffsets.putIfAbsent(brokerName, peekCursor.getBrokerOffset(brokerName));
+            long offset = msg.getQueueOffset();
+            offsetRanges.merge(brokerName, new long[] {offset, offset + 1},
+                (a, b) -> new long[] {Math.min(a[0], b[0]), Math.max(a[1], b[1])});
         }
 
         PeekResult peekResult = new PeekResult(PopStatus.FOUND, mergedMessages);
         peekResult.setRestNum(restNum);
-        peekResult.setCursor(new PeekCursor(nextBrokerOffsets).encode());
+        peekResult.setCursor(new Cursor(offsetRanges));
         return peekResult;
     }
 

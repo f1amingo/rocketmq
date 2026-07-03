@@ -28,9 +28,9 @@ public class OffsetOption {
     private Type type;
     private long value;
     /**
-     * Opaque pagination cursor, only set when type is CURSOR.
+     * Pagination cursor (POJO), only set when type is CURSOR.
      */
-    private String cursor;
+    private Cursor cursor;
 
     public OffsetOption() {
     }
@@ -40,7 +40,7 @@ public class OffsetOption {
         this.value = value;
     }
 
-    public static OffsetOption ofCursor(String cursor) {
+    public static OffsetOption ofCursor(Cursor cursor) {
         OffsetOption option = new OffsetOption();
         option.type = Type.CURSOR;
         option.cursor = cursor;
@@ -63,8 +63,12 @@ public class OffsetOption {
         this.value = value;
     }
 
-    public String getCursor() {
+    public Cursor getCursor() {
         return cursor;
+    }
+
+    public void setCursor(Cursor cursor) {
+        this.cursor = cursor;
     }
 
     @Override
