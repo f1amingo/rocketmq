@@ -39,6 +39,7 @@ import org.apache.rocketmq.broker.BrokerController;
 import org.apache.rocketmq.common.ServiceThread;
 import org.apache.rocketmq.common.constant.LoggerName;
 import org.apache.rocketmq.common.entity.ClientGroup;
+import org.apache.rocketmq.common.lite.Cursor;
 import org.apache.rocketmq.common.lite.LiteSubscription;
 import org.apache.rocketmq.common.lite.LiteUtil;
 import org.apache.rocketmq.common.lite.OffsetOption;
@@ -396,6 +397,17 @@ public class LiteSubscriptionRegistryImpl extends ServiceThread implements LiteS
                 break;
             case TIMESTAMP:
                 // timestamp option is disabled silently for now
+                break;
+            case CURSOR:
+                Cursor cursor = offsetOption.getCursor();
+                if (cursor != null) {
+                    String brokerName = brokerController.getBrokerConfig().getBrokerName();
+                    long[] range = cursor.getRange(brokerName);
+                    if (range != null) {
+                        // [begin, end): end is the next FORWARD consumption start offset
+                        targetOffset = range[1];
+                    }
+                }
                 break;
         }
 

@@ -44,6 +44,10 @@ public class Cursor {
         return ranges;
     }
 
+    public void setRanges(Map<String, long[]> ranges) {
+        this.ranges = ranges != null ? ranges : new HashMap<>();
+    }
+
     /**
      * @return the raw [begin, end) array for the given broker, or null if absent.
      */

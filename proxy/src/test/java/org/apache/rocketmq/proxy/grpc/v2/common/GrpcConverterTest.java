@@ -21,6 +21,9 @@ import apache.rocketmq.v2.MessageQueue;
 import apache.rocketmq.v2.MessageType;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.util.HashMap;
+import java.util.Map;
+import org.apache.rocketmq.common.lite.Cursor;
 import org.apache.rocketmq.common.message.MessageAccessor;
 import org.apache.rocketmq.common.message.MessageExt;
 import org.junit.Test;
@@ -82,5 +85,45 @@ public class GrpcConverterTest {
 
         // Verify message type is LITE
         assertEquals(MessageType.LITE, grpcMessage.getSystemProperties().getMessageType());
+    }
+
+    @Test
+    public void testToProtoCursor_and_toPojoCursor_roundTrip() {
+        Map<String, long[]> ranges = new HashMap<>();
+        ranges.put("broker-a", new long[]{0, 10});
+        ranges.put("broker-b", new long[]{5, 20});
+        Cursor pojoCursor = new Cursor(ranges);
+
+        // pojo -> proto
+        apache.rocketmq.v2.Cursor protoCursor = GrpcConverter.toProtoCursor(pojoCursor);
+        assertNotNull(protoCursor);
+        assertEquals(2, protoCursor.getRangesCount());
+        assertEquals(0, protoCursor.getRangesOrThrow("broker-a").getBegin());
+        assertEquals(10, protoCursor.getRangesOrThrow("broker-a").getEnd());
+        assertEquals(5, protoCursor.getRangesOrThrow("broker-b").getBegin());
+        assertEquals(20, protoCursor.getRangesOrThrow("broker-b").getEnd());
+
+        // proto -> pojo
+        Cursor restored = GrpcConverter.toPojoCursor(protoCursor);
+        assertNotNull(restored);
+        assertEquals(2, restored.getRanges().size());
+        assertThat(restored.getRange("broker-a")).containsExactly(0, 10);
+        assertThat(restored.getRange("broker-b")).containsExactly(5, 20);
+    }
+
+    @Test
+    public void testToProtoCursor_empty() {
+        Cursor emptyCursor = new Cursor();
+        apache.rocketmq.v2.Cursor protoCursor = GrpcConverter.toProtoCursor(emptyCursor);
+        assertNotNull(protoCursor);
+        assertEquals(0, protoCursor.getRangesCount());
+    }
+
+    @Test
+    public void testToPojoCursor_empty() {
+        apache.rocketmq.v2.Cursor protoCursor = apache.rocketmq.v2.Cursor.newBuilder().build();
+        Cursor pojoCursor = GrpcConverter.toPojoCursor(protoCursor);
+        assertNotNull(pojoCursor);
+        assertTrue(pojoCursor.isEmpty());
     }
 }

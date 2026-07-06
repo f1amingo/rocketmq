@@ -251,6 +251,14 @@ public class GrpcConverter {
                 .build();
             systemPropertiesBuilder.setDeadLetterQueue(dlq);
         }
+
+        // broker_name: logical broker identifier, set by ConsumerProcessor for peek responses.
+        // Enables SDK-side cursor construction for peek → subLite continuation.
+        String brokerName = messageExt.getBrokerName();
+        if (brokerName != null) {
+            systemPropertiesBuilder.setBrokerName(brokerName);
+        }
+
         return systemPropertiesBuilder.build();
     }
 

@@ -27,9 +27,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
 import org.apache.rocketmq.client.consumer.AckResult;
 import org.apache.rocketmq.client.consumer.AckStatus;
+import org.apache.rocketmq.client.consumer.PeekResult;
 import org.apache.rocketmq.client.consumer.PopResult;
 import org.apache.rocketmq.client.consumer.PopStatus;
 import org.apache.rocketmq.client.exception.MQBrokerException;
@@ -39,21 +41,27 @@ import org.apache.rocketmq.common.MixAll;
 import org.apache.rocketmq.common.constant.ConsumeInitMode;
 import org.apache.rocketmq.common.consumer.ReceiptHandle;
 import org.apache.rocketmq.common.filter.ExpressionType;
+import org.apache.rocketmq.common.lite.Cursor;
+import org.apache.rocketmq.common.lite.OffsetOption;
+import org.apache.rocketmq.common.lite.PeekDirection;
 import org.apache.rocketmq.common.message.MessageClientIDSetter;
 import org.apache.rocketmq.common.message.MessageConst;
 import org.apache.rocketmq.common.message.MessageExt;
 import org.apache.rocketmq.common.message.MessageQueue;
 import org.apache.rocketmq.proxy.common.ProxyContext;
+import org.apache.rocketmq.proxy.common.ProxyException;
 import org.apache.rocketmq.proxy.common.ProxyExceptionCode;
 import org.apache.rocketmq.common.utils.FutureUtils;
 import org.apache.rocketmq.proxy.common.utils.ProxyUtils;
 import org.apache.rocketmq.proxy.service.message.ReceiptHandleMessage;
 import org.apache.rocketmq.proxy.service.route.AddressableMessageQueue;
+import org.apache.rocketmq.proxy.service.route.MessageQueueSelector;
 import org.apache.rocketmq.proxy.service.route.MessageQueueView;
 import org.apache.rocketmq.remoting.protocol.RemotingCommand;
 import org.apache.rocketmq.remoting.protocol.filter.FilterAPI;
 import org.apache.rocketmq.remoting.protocol.header.AckMessageRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.ChangeInvisibleTimeRequestHeader;
+import org.apache.rocketmq.remoting.protocol.header.PeekLiteMessageRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.PopMessageRequestHeader;
 import org.junit.Before;
 import org.junit.Test;
@@ -67,6 +75,7 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -483,5 +492,356 @@ public class ConsumerProcessorTest extends BaseProcessorTest {
         assertEquals(1000, requestHeaderArgumentCaptor.getValue().getInvisibleTime().longValue());
         assertEquals(handle.getReceiptHandle(), requestHeaderArgumentCaptor.getValue().getExtraInfo());
         assertTrue("Suspend should be true", requestHeaderArgumentCaptor.getValue().isSuspend());
+    }
+
+    // ==================== peekLiteMessage tests ====================
+
+    private static final String PARENT_TOPIC = "parentTopic";
+    private static final String LITE_TOPIC = "liteTopic";
+    private static final String BROKER_A = "broker-a";
+    private static final String BROKER_B = "broker-b";
+
+    private AddressableMessageQueue buildBrokerActingQueue(String topic, String brokerName) {
+        return new AddressableMessageQueue(
+            new MessageQueue(topic, brokerName, -1), "127.0.0.1:10911");
+    }
+
+    private void mockReadQueues(List<AddressableMessageQueue> queues) {
+        MessageQueueView view = mock(MessageQueueView.class);
+        MessageQueueSelector selector = mock(MessageQueueSelector.class);
+        when(view.getReadSelector()).thenReturn(selector);
+        when(selector.getBrokerActingQueues()).thenReturn(queues);
+        try {
+            when(this.topicRouteService.getAllMessageQueueView(any(), eq(PARENT_TOPIC))).thenReturn(view);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    private MessageExt createPeekMessageExt(String brokerName, long queueOffset, long storeTimestamp) {
+        MessageExt msg = new MessageExt();
+        msg.setTopic(PARENT_TOPIC);
+        msg.setBrokerName(brokerName);
+        msg.setQueueOffset(queueOffset);
+        msg.setStoreTimestamp(storeTimestamp);
+        msg.setMsgId(MessageClientIDSetter.createUniqID());
+        return msg;
+    }
+
+    // --- Task 1: parameter validation ---
+
+    @Test(expected = IllegalArgumentException.class)
+    public void testPeekLiteMessage_maxMsgNumsZero() {
+        this.consumerProcessor.peekLiteMessage(
+            createContext(), CONSUMER_GROUP, PARENT_TOPIC, LITE_TOPIC,
+            0, new OffsetOption(OffsetOption.Type.POLICY, 0), PeekDirection.FORWARD, 3000);
+    }
+
+    @Test
+    public void testPeekLiteMessage_maxMsgNumsCapped() throws Throwable {
+        AddressableMessageQueue queue = buildBrokerActingQueue(PARENT_TOPIC, BROKER_A);
+        mockReadQueues(Collections.singletonList(queue));
+
+        PopResult emptyPopResult = new PopResult(PopStatus.FOUND, new ArrayList<>());
+        ArgumentCaptor<PeekLiteMessageRequestHeader> headerCaptor =
+            ArgumentCaptor.forClass(PeekLiteMessageRequestHeader.class);
+        when(this.messageService.peekLiteMessage(any(), any(), headerCaptor.capture(), anyLong()))
+            .thenReturn(CompletableFuture.completedFuture(emptyPopResult));
+
+        this.consumerProcessor.peekLiteMessage(
+            createContext(), CONSUMER_GROUP, PARENT_TOPIC, LITE_TOPIC,
+            999, new OffsetOption(OffsetOption.Type.POLICY, 0), PeekDirection.FORWARD, 3000).get();
+
+        assertEquals(ProxyUtils.MAX_MSG_NUMS_FOR_POP_REQUEST, headerCaptor.getValue().getMaxMsgNum());
+    }
+
+    // --- Task 2: route and queue ---
+
+    @Test
+    public void testPeekLiteMessage_noReadableQueue() {
+        mockReadQueues(Collections.emptyList());
+
+        CompletableFuture<PeekResult> future = this.consumerProcessor.peekLiteMessage(
+            createContext(), CONSUMER_GROUP, PARENT_TOPIC, LITE_TOPIC,
+            10, new OffsetOption(OffsetOption.Type.POLICY, 0), PeekDirection.FORWARD, 3000);
+
+        assertTrue(future.isCompletedExceptionally());
+        try {
+            future.get();
+            fail("Expected ExecutionException");
+        } catch (ExecutionException e) {
+            assertTrue(e.getCause() instanceof ProxyException);
+            assertEquals(ProxyExceptionCode.FORBIDDEN, ((ProxyException) e.getCause()).getCode());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    @Test
+    public void testPeekLiteMessage_nullReadableQueue() {
+        mockReadQueues(null);
+
+        CompletableFuture<PeekResult> future = this.consumerProcessor.peekLiteMessage(
+            createContext(), CONSUMER_GROUP, PARENT_TOPIC, LITE_TOPIC,
+            10, new OffsetOption(OffsetOption.Type.POLICY, 0), PeekDirection.FORWARD, 3000);
+
+        assertTrue(future.isCompletedExceptionally());
+        try {
+            future.get();
+            fail("Expected ExecutionException");
+        } catch (ExecutionException e) {
+            assertTrue(e.getCause() instanceof ProxyException);
+            assertEquals(ProxyExceptionCode.FORBIDDEN, ((ProxyException) e.getCause()).getCode());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    // --- Task 3: non-CURSOR OffsetOption header building ---
+
+    @Test
+    public void testPeekLiteMessage_forwardWithOffsetOption() throws Throwable {
+        AddressableMessageQueue queue = buildBrokerActingQueue(PARENT_TOPIC, BROKER_A);
+        mockReadQueues(Collections.singletonList(queue));
+
+        PopResult emptyPopResult = new PopResult(PopStatus.FOUND, new ArrayList<>());
+        ArgumentCaptor<PeekLiteMessageRequestHeader> headerCaptor =
+            ArgumentCaptor.forClass(PeekLiteMessageRequestHeader.class);
+        when(this.messageService.peekLiteMessage(any(), any(), headerCaptor.capture(), anyLong()))
+            .thenReturn(CompletableFuture.completedFuture(emptyPopResult));
+
+        OffsetOption offsetOption = new OffsetOption(OffsetOption.Type.OFFSET, 100L);
+        this.consumerProcessor.peekLiteMessage(
+            createContext(), CONSUMER_GROUP, PARENT_TOPIC, LITE_TOPIC,
+            10, offsetOption, PeekDirection.FORWARD, 3000).get();
+
+        PeekLiteMessageRequestHeader header = headerCaptor.getValue();
+        assertEquals("OFFSET", header.getOffsetOptionType());
+        assertEquals(100L, header.getOffsetOptionValue());
+        assertEquals("FORWARD", header.getPeekDirection());
+        assertEquals(PARENT_TOPIC, header.getParentTopic());
+        assertEquals(LITE_TOPIC, header.getLiteTopic());
+        assertEquals(CONSUMER_GROUP, header.getConsumerGroup());
+    }
+
+    // --- Task 4: CURSOR type header building ---
+
+    @Test
+    public void testPeekLiteMessage_cursorForward() throws Throwable {
+        AddressableMessageQueue queue = buildBrokerActingQueue(PARENT_TOPIC, BROKER_A);
+        mockReadQueues(Collections.singletonList(queue));
+
+        PopResult emptyPopResult = new PopResult(PopStatus.FOUND, new ArrayList<>());
+        ArgumentCaptor<PeekLiteMessageRequestHeader> headerCaptor =
+            ArgumentCaptor.forClass(PeekLiteMessageRequestHeader.class);
+        when(this.messageService.peekLiteMessage(any(), any(), headerCaptor.capture(), anyLong()))
+            .thenReturn(CompletableFuture.completedFuture(emptyPopResult));
+
+        Map<String, long[]> ranges = new HashMap<>();
+        ranges.put(BROKER_A, new long[]{10, 20});
+        Cursor cursor = new Cursor(ranges);
+        OffsetOption offsetOption = OffsetOption.ofCursor(cursor);
+
+        this.consumerProcessor.peekLiteMessage(
+            createContext(), CONSUMER_GROUP, PARENT_TOPIC, LITE_TOPIC,
+            10, offsetOption, PeekDirection.FORWARD, 3000).get();
+
+        PeekLiteMessageRequestHeader header = headerCaptor.getValue();
+        assertEquals("OFFSET", header.getOffsetOptionType());
+        assertEquals(20L, header.getOffsetOptionValue()); // range[1]
+    }
+
+    @Test
+    public void testPeekLiteMessage_cursorBackward() throws Throwable {
+        AddressableMessageQueue queue = buildBrokerActingQueue(PARENT_TOPIC, BROKER_A);
+        mockReadQueues(Collections.singletonList(queue));
+
+        PopResult emptyPopResult = new PopResult(PopStatus.FOUND, new ArrayList<>());
+        ArgumentCaptor<PeekLiteMessageRequestHeader> headerCaptor =
+            ArgumentCaptor.forClass(PeekLiteMessageRequestHeader.class);
+        when(this.messageService.peekLiteMessage(any(), any(), headerCaptor.capture(), anyLong()))
+            .thenReturn(CompletableFuture.completedFuture(emptyPopResult));
+
+        Map<String, long[]> ranges = new HashMap<>();
+        ranges.put(BROKER_A, new long[]{10, 20});
+        Cursor cursor = new Cursor(ranges);
+        OffsetOption offsetOption = OffsetOption.ofCursor(cursor);
+
+        this.consumerProcessor.peekLiteMessage(
+            createContext(), CONSUMER_GROUP, PARENT_TOPIC, LITE_TOPIC,
+            10, offsetOption, PeekDirection.BACKWARD, 3000).get();
+
+        PeekLiteMessageRequestHeader header = headerCaptor.getValue();
+        assertEquals("OFFSET", header.getOffsetOptionType());
+        assertEquals(9L, header.getOffsetOptionValue()); // range[0] - 1
+    }
+
+    @Test
+    public void testPeekLiteMessage_cursorBrokerNotInCursor() throws Throwable {
+        AddressableMessageQueue queue = buildBrokerActingQueue(PARENT_TOPIC, BROKER_A);
+        mockReadQueues(Collections.singletonList(queue));
+
+        // Cursor only contains broker-b, so broker-a should be skipped
+        Map<String, long[]> ranges = new HashMap<>();
+        ranges.put(BROKER_B, new long[]{10, 20});
+        Cursor cursor = new Cursor(ranges);
+        OffsetOption offsetOption = OffsetOption.ofCursor(cursor);
+
+        PeekResult result = this.consumerProcessor.peekLiteMessage(
+            createContext(), CONSUMER_GROUP, PARENT_TOPIC, LITE_TOPIC,
+            10, offsetOption, PeekDirection.FORWARD, 3000).get();
+
+        // broker-a was skipped → no requests sent → empty result
+        verify(this.messageService, never()).peekLiteMessage(any(), any(), any(), anyLong());
+        assertEquals(PopStatus.FOUND, result.getPopStatus());
+        assertTrue(result.getMsgFoundList().isEmpty());
+        assertNull(result.getCursor());
+    }
+
+    // --- Task 5: result aggregation ---
+
+    @Test
+    public void testPeekLiteMessage_emptyResult() throws Throwable {
+        AddressableMessageQueue queue = buildBrokerActingQueue(PARENT_TOPIC, BROKER_A);
+        mockReadQueues(Collections.singletonList(queue));
+
+        PopResult emptyPopResult = new PopResult(PopStatus.FOUND, new ArrayList<>());
+        emptyPopResult.setRestNum(0);
+        when(this.messageService.peekLiteMessage(any(), any(), any(), anyLong()))
+            .thenReturn(CompletableFuture.completedFuture(emptyPopResult));
+
+        PeekResult result = this.consumerProcessor.peekLiteMessage(
+            createContext(), CONSUMER_GROUP, PARENT_TOPIC, LITE_TOPIC,
+            10, new OffsetOption(OffsetOption.Type.POLICY, 0), PeekDirection.FORWARD, 3000).get();
+
+        assertEquals(PopStatus.FOUND, result.getPopStatus());
+        assertTrue(result.getMsgFoundList().isEmpty());
+        assertNull(result.getCursor());
+        assertEquals(0, result.getRestNum());
+    }
+
+    @Test
+    public void testPeekLiteMessage_forwardSortAndTruncate() throws Throwable {
+        AddressableMessageQueue queueA = buildBrokerActingQueue(PARENT_TOPIC, BROKER_A);
+        AddressableMessageQueue queueB = buildBrokerActingQueue(PARENT_TOPIC, BROKER_B);
+        mockReadQueues(java.util.Arrays.asList(queueA, queueB));
+
+        // broker-a: 3 messages with timestamps 100, 300, 500
+        List<MessageExt> msgsA = new ArrayList<>();
+        msgsA.add(createPeekMessageExt(BROKER_A, 0, 100));
+        msgsA.add(createPeekMessageExt(BROKER_A, 1, 300));
+        msgsA.add(createPeekMessageExt(BROKER_A, 2, 500));
+        PopResult resultA = new PopResult(PopStatus.FOUND, msgsA);
+        resultA.setRestNum(5);
+
+        // broker-b: 3 messages with timestamps 200, 400, 600
+        List<MessageExt> msgsB = new ArrayList<>();
+        msgsB.add(createPeekMessageExt(BROKER_B, 0, 200));
+        msgsB.add(createPeekMessageExt(BROKER_B, 1, 400));
+        msgsB.add(createPeekMessageExt(BROKER_B, 2, 600));
+        PopResult resultB = new PopResult(PopStatus.FOUND, msgsB);
+        resultB.setRestNum(3);
+
+        doAnswer((Answer<CompletableFuture<PopResult>>) invocation -> {
+            AddressableMessageQueue mq = invocation.getArgument(1);
+            if (BROKER_A.equals(mq.getBrokerName())) {
+                return CompletableFuture.completedFuture(resultA);
+            }
+            return CompletableFuture.completedFuture(resultB);
+        }).when(this.messageService).peekLiteMessage(any(), any(), any(), anyLong());
+
+        PeekResult result = this.consumerProcessor.peekLiteMessage(
+            createContext(), CONSUMER_GROUP, PARENT_TOPIC, LITE_TOPIC,
+            4, new OffsetOption(OffsetOption.Type.POLICY, 0), PeekDirection.FORWARD, 3000).get();
+
+        assertEquals(PopStatus.FOUND, result.getPopStatus());
+        assertEquals(4, result.getMsgFoundList().size());
+        // FORWARD: ascending by storeTimestamp → 100, 200, 300, 400
+        assertEquals(100, result.getMsgFoundList().get(0).getStoreTimestamp());
+        assertEquals(200, result.getMsgFoundList().get(1).getStoreTimestamp());
+        assertEquals(300, result.getMsgFoundList().get(2).getStoreTimestamp());
+        assertEquals(400, result.getMsgFoundList().get(3).getStoreTimestamp());
+        // restNum = broker-side(5+3) + truncated(6-4) = 10
+        assertEquals(10, result.getRestNum());
+        assertNotNull(result.getCursor());
+    }
+
+    @Test
+    public void testPeekLiteMessage_backwardSort() throws Throwable {
+        AddressableMessageQueue queue = buildBrokerActingQueue(PARENT_TOPIC, BROKER_A);
+        mockReadQueues(Collections.singletonList(queue));
+
+        List<MessageExt> msgs = new ArrayList<>();
+        msgs.add(createPeekMessageExt(BROKER_A, 0, 100));
+        msgs.add(createPeekMessageExt(BROKER_A, 1, 300));
+        msgs.add(createPeekMessageExt(BROKER_A, 2, 500));
+        PopResult popResult = new PopResult(PopStatus.FOUND, msgs);
+        popResult.setRestNum(0);
+        when(this.messageService.peekLiteMessage(any(), any(), any(), anyLong()))
+            .thenReturn(CompletableFuture.completedFuture(popResult));
+
+        PeekResult result = this.consumerProcessor.peekLiteMessage(
+            createContext(), CONSUMER_GROUP, PARENT_TOPIC, LITE_TOPIC,
+            10, new OffsetOption(OffsetOption.Type.POLICY, 0), PeekDirection.BACKWARD, 3000).get();
+
+        assertEquals(3, result.getMsgFoundList().size());
+        // BACKWARD: descending by storeTimestamp → 500, 300, 100
+        assertEquals(500, result.getMsgFoundList().get(0).getStoreTimestamp());
+        assertEquals(300, result.getMsgFoundList().get(1).getStoreTimestamp());
+        assertEquals(100, result.getMsgFoundList().get(2).getStoreTimestamp());
+    }
+
+    @Test
+    public void testPeekLiteMessage_cursorBuiltFromMessages() throws Throwable {
+        AddressableMessageQueue queue = buildBrokerActingQueue(PARENT_TOPIC, BROKER_A);
+        mockReadQueues(Collections.singletonList(queue));
+
+        List<MessageExt> msgs = new ArrayList<>();
+        msgs.add(createPeekMessageExt(BROKER_A, 5, 100));
+        msgs.add(createPeekMessageExt(BROKER_A, 6, 200));
+        msgs.add(createPeekMessageExt(BROKER_A, 7, 300));
+        PopResult popResult = new PopResult(PopStatus.FOUND, msgs);
+        popResult.setRestNum(0);
+        when(this.messageService.peekLiteMessage(any(), any(), any(), anyLong()))
+            .thenReturn(CompletableFuture.completedFuture(popResult));
+
+        PeekResult result = this.consumerProcessor.peekLiteMessage(
+            createContext(), CONSUMER_GROUP, PARENT_TOPIC, LITE_TOPIC,
+            10, new OffsetOption(OffsetOption.Type.POLICY, 0), PeekDirection.FORWARD, 3000).get();
+
+        assertNotNull(result.getCursor());
+        long[] range = result.getCursor().getRange(BROKER_A);
+        assertNotNull(range);
+        // [begin, end) = [5, 8)
+        assertEquals(5, range[0]);
+        assertEquals(8, range[1]);
+    }
+
+    // --- Task 6: exception handling ---
+
+    @Test
+    public void testPeekLiteMessage_brokerFutureException() {
+        AddressableMessageQueue queue = buildBrokerActingQueue(PARENT_TOPIC, BROKER_A);
+        mockReadQueues(Collections.singletonList(queue));
+
+        CompletableFuture<PopResult> failedFuture = new CompletableFuture<>();
+        failedFuture.completeExceptionally(new RuntimeException("broker timeout"));
+        when(this.messageService.peekLiteMessage(any(), any(), any(), anyLong()))
+            .thenReturn(failedFuture);
+
+        CompletableFuture<PeekResult> future = this.consumerProcessor.peekLiteMessage(
+            createContext(), CONSUMER_GROUP, PARENT_TOPIC, LITE_TOPIC,
+            10, new OffsetOption(OffsetOption.Type.POLICY, 0), PeekDirection.FORWARD, 3000);
+
+        assertTrue(future.isCompletedExceptionally());
+        try {
+            future.get();
+            fail("Expected ExecutionException");
+        } catch (ExecutionException e) {
+            // allOf propagates the broker failure as-is through the future chain
+            assertNotNull(e.getCause());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 }
