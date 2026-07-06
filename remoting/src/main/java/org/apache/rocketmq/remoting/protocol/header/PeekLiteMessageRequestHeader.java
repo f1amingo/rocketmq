@@ -114,11 +114,19 @@ public class PeekLiteMessageRequestHeader extends RpcRequestHeader {
     }
 
     public PeekDirection toPeekDirection() {
-        return PeekDirection.valueOf(peekDirection);
+        return peekDirection != null ? PeekDirection.valueOf(peekDirection) : PeekDirection.FORWARD;
     }
 
     public OffsetOption toOffsetOption() {
-        return new OffsetOption(OffsetOption.Type.valueOf(offsetOptionType), offsetOptionValue);
+        if (offsetOptionType == null) {
+            return null;
+        }
+        try {
+            OffsetOption.Type type = OffsetOption.Type.valueOf(offsetOptionType);
+            return new OffsetOption(type, offsetOptionValue);
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
     }
 
     @Override

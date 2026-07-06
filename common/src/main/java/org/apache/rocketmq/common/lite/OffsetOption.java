@@ -78,13 +78,14 @@ public class OffsetOption {
         }
 
         OffsetOption option = (OffsetOption) o;
-        return value == option.value && type == option.type;
+        return value == option.value && type == option.type && Objects.equals(cursor, option.cursor);
     }
 
     @Override
     public int hashCode() {
         int result = Objects.hashCode(type);
         result = 31 * result + Long.hashCode(value);
+        result = 31 * result + Objects.hashCode(cursor);
         return result;
     }
 
@@ -92,6 +93,7 @@ public class OffsetOption {
     public String toString() {
         return "OffsetOption{" + "type=" + type +
             ", value=" + value +
+            ", cursor=" + cursor +
             '}';
     }
 

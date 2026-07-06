@@ -315,6 +315,9 @@ public class ConsumerProcessor extends AbstractProcessor {
         PeekDirection direction,
         long timeoutMillis
     ) {
+        if (maxMsgNums <= 0) {
+            throw new IllegalArgumentException("maxMsgNums must be positive, but got " + maxMsgNums);
+        }
         if (maxMsgNums > ProxyUtils.MAX_MSG_NUMS_FOR_POP_REQUEST) {
             log.warn("change maxNums from {} to {} for peek lite request, topic:{}, group:{}",
                 maxMsgNums, ProxyUtils.MAX_MSG_NUMS_FOR_POP_REQUEST, parentTopic, consumerGroup);
@@ -428,7 +431,13 @@ public class ConsumerProcessor extends AbstractProcessor {
         long totalRestNum = 0;
 
         for (Map.Entry<String, CompletableFuture<PopResult>> entry : brokerFutureMap.entrySet()) {
-            PopResult result = entry.getValue().getNow(null);
+            PopResult result;
+            try {
+                result = entry.getValue().join();
+            } catch (Exception e) {
+                log.error("Failed to get peek result from broker: {}", entry.getKey(), e);
+                throw new ProxyException(ProxyExceptionCode.INTERNAL_SERVER_ERROR, "Failed to get peek result from broker: " + entry.getKey(), e);
+            }
             if (result != null) {
                 totalRestNum += result.getRestNum();
                 if (result.getMsgFoundList() != null && !result.getMsgFoundList().isEmpty()) {
