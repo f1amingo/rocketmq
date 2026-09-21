@@ -257,8 +257,10 @@ public class PopLiteMessageProcessor implements NettyRequestProcessor {
             if (null == lmqName) {
                 break;
             }
-            if (!processed.add(lmqName)) {
-                continue; // wait for next pop request or re-fetch in current process, here prefer the former approach
+            if (processed.contains(lmqName)) {
+                // Already handled in this pop; skip the duplicate. A FIFO-blocked lmq is never marked by
+                // popLiteTopic, so its later ack-unblock re-dispatch is retried instead of being deduped away.
+                continue;
             }
             // Tombstone check: reject pull if this client was evicted from the liteTopic (exclusive mode)
             if (isExclusiveGroup && brokerController.getLiteSubscriptionRegistry().hasExclusiveEvictionTombstone(clientId, lmqName)) {
@@ -266,7 +268,7 @@ public class PopLiteMessageProcessor implements NettyRequestProcessor {
                 continue;
             }
             Pair<StringBuilder, GetMessageResult> pair = popLiteTopic(parentTopic, clientHost, group, lmqName,
-                maxNum - total.get(), popTime, invisibleTime, attemptId);
+                maxNum - total.get(), popTime, invisibleTime, attemptId, processed);
             if (null == pair || pair.getObject2().getMessageCount() <= 0) {
                 continue;
             }
@@ -285,16 +287,19 @@ public class PopLiteMessageProcessor implements NettyRequestProcessor {
     }
 
     @VisibleForTesting
-    public Pair<StringBuilder, GetMessageResult> popLiteTopic(String parentTopic, String clientHost, String group,
-        String lmqName, long maxNum, long popTime, long invisibleTime, String attemptId) {
+    Pair<StringBuilder, GetMessageResult> popLiteTopic(String parentTopic, String clientHost, String group,
+        String lmqName, long maxNum, long popTime, long invisibleTime, String attemptId, Set<String> processed) {
         String lockKey = KeyBuilder.buildPopLiteLockKey(group, lmqName);
         if (!lockService.tryLock(lockKey)) {
             return null;
         }
         try {
             if (isFifoBlocked(attemptId, group, lmqName, invisibleTime)) {
+                // Leave this lmq unmarked so a later ack-unblock re-dispatch is retried, not deduped away.
                 return null;
             }
+            // Holding the lock and not blocked: this lmq is handled in this pop, mark it to dedup further events.
+            processed.add(lmqName);
             final long consumeOffset = getPopOffset(group, lmqName);
             GetMessageResult result = getMessage(clientHost, group, lmqName, consumeOffset, (int) maxNum);
             return handleGetMessageResult(result, parentTopic, group, lmqName, popTime, invisibleTime, attemptId);
